@@ -48,7 +48,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v18-render-ready-no-ui-version';
+const API_VERSION = 'v19-date-filter-statefix';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
@@ -61,8 +61,6 @@ const SUPABASE_REST_STATUS = validateSupabaseRest(RAW_SUPABASE_URL, RAW_SUPABASE
 const USE_SUPABASE_REST = !DATABASE_URL && SUPABASE_REST_STATUS.usable;
 const AUTO_COLLECT_ON_LOAD = String(process.env.AUTO_COLLECT_ON_LOAD || 'false').toLowerCase() === 'true';
 
-const TODAY = new Date();
-const TODAY_KST = toKstDateString(TODAY);
 
 const BOARD_ID_LABEL_MAP = {
   m_74: '공지',
@@ -204,6 +202,10 @@ function toKstDateString(dateObj) {
   return kst.toISOString().slice(0, 10);
 }
 
+function getTodayKst() {
+  return toKstDateString(new Date());
+}
+
 function kstNowString() {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
   return kst.toISOString().replace('T', ' ').slice(0, 19);
@@ -220,10 +222,16 @@ function compareDate(a, b) {
 }
 
 function periodRange(period, startDate, endDate) {
-  const today = TODAY_KST;
+  const today = getTodayKst();
+  // When the client sends an explicit date range, trust it for every period.
+  // This prevents long-running Render/Node processes from using a stale server-start date.
+  if (startDate || endDate) {
+    const safeEnd = endDate || today;
+    return { startDate: startDate || addDays(safeEnd, -7), endDate: safeEnd };
+  }
   if (period === 'today') return { startDate: today, endDate: today };
   if (period === 'recent14') return { startDate: addDays(today, -14), endDate: today };
-  if (period === 'custom') return { startDate: startDate || addDays(today, -7), endDate: endDate || today };
+  if (period === 'custom') return { startDate: addDays(today, -7), endDate: today };
   return { startDate: addDays(today, -7), endDate: today };
 }
 
@@ -625,7 +633,7 @@ function sortItemsByDateDesc(items) {
 }
 
 function summarize(items) {
-  const today = TODAY_KST;
+  const today = getTodayKst();
   const recent7 = addDays(today, -7);
   const recent14 = addDays(today, -14);
   const categories = new Map();
@@ -695,7 +703,7 @@ app.get('/api/health', (_req, res) => {
     initError: initError ? String(initError?.message || initError).slice(0, 500) : null,
     port: PORT,
     host: HOST,
-    today: TODAY_KST,
+    today: getTodayKst(),
     sources: MFDS_SOURCES.length
   });
 });
@@ -743,7 +751,7 @@ app.post('/api/collect', async (req, res, next) => {
   try {
     const body = req.body || {};
     const mode = body.mode === 'fast' ? 'fast' : 'period';
-    const today = TODAY_KST;
+    const today = getTodayKst();
     const startDate = body.startDate || addDays(today, -7);
     const endDate = body.endDate || today;
     const result = await collectMfdsToDb(startDate, endDate, mode);
@@ -779,10 +787,11 @@ app.listen(PORT, HOST, async () => {
   console.log(`Client dist serving: ${CLIENT_DIST}`);
   try {
     await initDb();
-    if (AUTO_COLLECT_ON_LOAD && (await getMeta('last_auto_collect_date', '')) !== TODAY_KST) {
+    const startupToday = getTodayKst();
+    if (AUTO_COLLECT_ON_LOAD && (await getMeta('last_auto_collect_date', '')) !== startupToday) {
       console.log('Auto collect enabled. Collecting recent 14 days...');
-      await collectMfdsToDb(addDays(TODAY_KST, -14), TODAY_KST, 'fast');
-      await setMeta('last_auto_collect_date', TODAY_KST);
+      await collectMfdsToDb(addDays(startupToday, -14), startupToday, 'fast');
+      await setMeta('last_auto_collect_date', startupToday);
     }
   } catch (err) {
     console.error('[startup db init warning]', err);

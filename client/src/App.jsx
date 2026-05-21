@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ExternalLink,
   RefreshCw,
@@ -85,32 +85,53 @@ function periodDatesForClient(period, startDate, endDate) {
   return { startDate: addDays(today, -7), endDate: today };
 }
 
+function normalizeFilters(input) {
+  const base = input || {};
+  const range = periodDatesForClient(base.period || 'recent7', base.startDate, base.endDate);
+  return {
+    period: base.period || 'recent7',
+    startDate: range.startDate,
+    endDate: range.endDate,
+    q: base.q || ''
+  };
+}
+
+function emptyPage(pageSize = 10) {
+  return { items: [], total: 0, totalPages: 1, page: 1, pageSize };
+}
+
 function buildQuery(filters, extra = {}) {
+  const normalized = normalizeFilters(filters);
   const params = new URLSearchParams();
-  params.set('period', filters.period);
-  if (filters.period === 'custom') {
-    params.set('startDate', filters.startDate);
-    params.set('endDate', filters.endDate);
-  }
-  if (filters.q) params.set('q', filters.q);
-  if (filters.category && filters.category !== '전체') params.set('category', filters.category);
-  Object.entries(extra).forEach(([k, v]) => params.set(k, v));
+  params.set('period', normalized.period);
+  // Always send an explicit date range so server date does not drift after long uptime.
+  params.set('startDate', normalized.startDate);
+  params.set('endDate', normalized.endDate);
+  if (normalized.q) params.set('q', normalized.q);
+  Object.entries(extra).forEach(([k, v]) => {
+    if (v === undefined || v === null || v === '') return;
+    if (k === 'category' && v === '전체') return;
+    params.set(k, v);
+  });
   return params.toString();
 }
 
 function App() {
   const [tab, setTab] = useState('main');
   const [options, setOptions] = useState({ categories: ['전체'], boards: [] });
-  const [filters, setFilters] = useState({ period: 'recent7', startDate: addDays(todayKst(), -7), endDate: todayKst(), q: '', category: '전체' });
-  const [draft, setDraft] = useState(filters);
+  const initialFilters = normalizeFilters({ period: 'recent7', startDate: addDays(todayKst(), -7), endDate: todayKst(), q: '' });
+  const [filters, setFilters] = useState(initialFilters);
+  const [draft, setDraft] = useState(initialFilters);
+  const [selectedCategory, setSelectedCategory] = useState('전체');
   const [stats, setStats] = useState(null);
-  const [items, setItems] = useState({ items: [], total: 0, totalPages: 1, page: 1, pageSize: 10 });
-  const [categoryItems, setCategoryItems] = useState({ items: [], total: 0, totalPages: 1, page: 1, pageSize: 10 });
+  const [items, setItems] = useState(emptyPage(10));
+  const [categoryItems, setCategoryItems] = useState(emptyPage(10));
   const [loading, setLoading] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const dataRequestRef = useRef(0);
 
   async function loadOptions() {
     try {
@@ -121,23 +142,27 @@ function App() {
     }
   }
 
-  async function loadData(page = 1, categoryPage = 1, nextFilters = filters) {
+  async function loadData(page = 1, categoryPage = 1, nextFilters = filters, category = selectedCategory) {
+    const requestId = dataRequestRef.current + 1;
+    dataRequestRef.current = requestId;
+    const normalized = normalizeFilters(nextFilters);
     setLoading(true);
     setError('');
+    setCategoryItems(emptyPage(10));
     try {
-      const q = buildQuery(nextFilters);
       const [statsData, listData, categoryData] = await Promise.all([
-        apiGet(`/api/stats?${q}`),
-        apiGet(`/api/items?${buildQuery(nextFilters, { page, pageSize: 10 })}`),
-        apiGet(`/api/items?${buildQuery({ ...nextFilters, category: nextFilters.category || '전체' }, { page: categoryPage, pageSize: 10 })}`)
+        apiGet(`/api/stats?${buildQuery(normalized)}`),
+        apiGet(`/api/items?${buildQuery(normalized, { page, pageSize: 10 })}`),
+        apiGet(`/api/items?${buildQuery(normalized, { page: categoryPage, pageSize: 10, category })}`)
       ]);
+      if (requestId !== dataRequestRef.current) return;
       setStats(statsData);
       setItems(listData);
       setCategoryItems(categoryData);
     } catch (err) {
-      setError(err.message || String(err));
+      if (requestId === dataRequestRef.current) setError(err.message || String(err));
     } finally {
-      setLoading(false);
+      if (requestId === dataRequestRef.current) setLoading(false);
     }
   }
 
@@ -147,17 +172,13 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const topCategories = useMemo(() => stats?.filteredStats?.categoryRows || [], [stats]);
 
   function applyFilters() {
-    const normalized = { ...draft };
-    if (normalized.period !== 'custom') {
-      normalized.startDate = addDays(todayKst(), normalized.period === 'today' ? 0 : normalized.period === 'recent14' ? -14 : -7);
-      normalized.endDate = todayKst();
-    }
+    const normalized = normalizeFilters(draft);
     setFilters(normalized);
+    setDraft(normalized);
     setMessage('조회조건을 적용했습니다. DB 저장 데이터만 조회합니다.');
-    loadData(1, 1, normalized);
+    loadData(1, 1, normalized, selectedCategory);
     setMobileFiltersOpen(false);
   }
 
@@ -180,7 +201,7 @@ function App() {
 
   const headerStats = stats?.stats || { today: 0, recent7: 0, recent14: 0, total: 0 };
   const periodLabel = PERIODS.find(p => p.value === filters.period)?.label || '최근 7일';
-  const filterSummary = `${periodLabel} · ${filters.category || '전체'}${filters.q ? ` · ${filters.q}` : ''}`;
+  const filterSummary = `${periodLabel} · 전체${filters.q ? ` · ${filters.q}` : ''}`;
 
   const filterBody = (
     <>
@@ -269,26 +290,24 @@ function App() {
             <RecentList items={stats?.recent || []} />
           </div>
         </section>
-        <ItemTable title="식약처 상세 목록" data={items} onPage={p => loadData(p, categoryItems.page, filters)} />
+        <ItemTable title="식약처 상세 목록" data={items} onPage={p => loadData(p, categoryItems.page, filters, selectedCategory)} />
       </>}
 
       {tab === 'category' && <>
         <div className="category-select-wrap mobile-only card">
           <label>구분 선택</label>
-          <select value={filters.category || '전체'} onChange={e => {
+          <select value={selectedCategory} onChange={e => {
             const c = e.target.value;
-            const next = { ...filters, category: c };
-            setFilters(next);
-            setDraft(next);
-            loadData(1, 1, next);
+            setSelectedCategory(c);
+            loadData(1, 1, filters, c);
           }}>
             {options.categories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div className="category-chip-row desktop-only">
-          {options.categories.map(c => <button key={c} className={draft.category === c ? 'chip active' : 'chip'} onClick={() => { const next = { ...filters, category: c }; setFilters(next); setDraft(next); loadData(1, 1, next); }}>{c}</button>)}
+          {options.categories.map(c => <button key={c} className={selectedCategory === c ? 'chip active' : 'chip'} onClick={() => { setSelectedCategory(c); loadData(1, 1, filters, c); }}>{c}</button>)}
         </div>
-        <ItemTable title={`${filters.category || '전체'} 정보`} data={categoryItems} onPage={p => loadData(items.page, p, filters)} />
+        <ItemTable title={`${selectedCategory || '전체'} 정보`} data={categoryItems} onPage={p => loadData(items.page, p, filters, selectedCategory)} />
       </>}
 
       {tab === 'boards' && <OfficialBoards boards={options.boards} />}

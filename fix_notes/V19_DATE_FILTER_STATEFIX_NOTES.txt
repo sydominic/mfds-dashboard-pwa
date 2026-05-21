@@ -1,0 +1,19 @@
+V19 DATE/FILTER STATE FIX
+
+1. 날짜 기준 고정 문제 수정
+- 서버 시작 시점에 고정되던 TODAY_KST 전역 상수를 제거했습니다.
+- /api/health, /api/stats, /api/items, /api/collect, summarize()에서 요청 시점 기준 KST 날짜를 다시 계산합니다.
+- 프론트는 recent7/recent14/today 조회 시에도 startDate/endDate를 명시적으로 서버에 전달합니다.
+
+2. 구분별 필터 전역 오염 문제 수정
+- 식약처 정보 탭의 기간/검색어 필터와 구분별 정보 탭의 카테고리 선택 상태를 분리했습니다.
+- 식약처 정보 탭의 최신 게시물/상세 목록은 카테고리 선택의 영향을 받지 않습니다.
+- 구분별 정보 탭에서만 selectedCategory를 사용합니다.
+
+3. 비동기 응답 엇갈림 완화
+- 데이터 요청 ID를 추가하여 늦게 도착한 이전 응답이 최신 화면을 덮지 않도록 했습니다.
+- 카테고리 변경 시 구분별 목록을 먼저 비우고 새 데이터로 갱신합니다.
+
+4. 버전
+- API version: v19-date-filter-statefix
+- package version: 1.9.0
