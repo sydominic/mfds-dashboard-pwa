@@ -1,0 +1,15 @@
+MFDS Regulatory PWA v5 local install fix
+
+Fixes:
+1. scripts/stop-ports.ps1 parser error:
+   - "$port:" changed to "${port}:"
+
+2. client npm dependency conflict:
+   - @vitejs/plugin-react pinned to 4.3.4
+   - vite pinned to 5.4.21
+   - client install uses --legacy-peer-deps as a fallback
+
+Run:
+1. Copy .env with DATABASE_URL to this folder.
+2. Run run_local.bat.
+3. Check run_local.log, server.log, client.log if there is an error.

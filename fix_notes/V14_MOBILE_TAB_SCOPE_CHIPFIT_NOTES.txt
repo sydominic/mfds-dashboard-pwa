@@ -1,0 +1,6 @@
+V14 반영사항
+1. PC 구분별 정보 칩 버튼이 줄바꿈되지 않도록 크기 축소 및 nowrap/가로스크롤 처리
+2. 모바일 구분별 정보/공식게시판 탭에서는 조회조건 패널 숨김
+3. 모바일 구분별 정보/공식게시판 탭에서는 KPI 카드 숨김
+4. 첫 화면은 App.jsx useState('main')로 식약처 정보 탭이 기본값
+5. API version: v15-client-version-hardfix

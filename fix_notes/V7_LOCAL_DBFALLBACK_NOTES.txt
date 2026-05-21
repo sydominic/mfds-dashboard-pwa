@@ -1,0 +1,10 @@
+MFDS Regulatory PWA v7 local-dbfallback
+
+Changes:
+1. /api/health no longer blocks on PostgreSQL initialization. The launcher can open the app even if DB config is not ready.
+2. DATABASE_URL validation added. Placeholder/localhost PostgreSQL URLs are ignored unless ALLOW_LOCAL_POSTGRES=true.
+3. If no usable DATABASE_URL exists, the app runs in local-json mode for local testing.
+4. run_local_core.bat log-tail branch rewritten to avoid the stray 'No log file argument was provided' message.
+
+For Supabase/PostgreSQL mode, set DATABASE_URL to the Supabase pooler connection string.
+For local-only testing, remove DATABASE_URL or leave it blank.

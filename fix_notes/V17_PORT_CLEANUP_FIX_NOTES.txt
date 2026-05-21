@@ -1,0 +1,15 @@
+V17_PORT_CLEANUP_FIX_NOTES
+
+1. Fixed stop-ports.ps1 parameter parsing.
+   - Previous command passed "8890,5290,8891,5291,8892,5292" as one string.
+   - PowerShell could not convert it to [int[]], so old servers were not stopped.
+
+2. run_local_core.bat now passes ports as separate arguments.
+   - 8890 5290 8891 5291 8892 5292
+
+3. stop-ports.ps1 now accepts comma-separated or space-separated values.
+   - This prevents the same parameter binding failure from recurring.
+
+4. API/UI version updated to v17-port-cleanup-fix.
+
+5. Root-level fix notes were moved into fix_notes/.

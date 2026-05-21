@@ -1,0 +1,12 @@
+MFDS Regulatory PWA v8 - UI/sort refinement
+
+Changes
+- Latest posts and item lists are sorted by item_date descending, then collected_at descending.
+- Removed category distribution card from the main dashboard.
+- Reduced latest post title font size and tightened the panel.
+- Removed the category dropdown and reset button from the search toolbar.
+- Fixed custom period layout so date inputs and action buttons stay aligned.
+- Restyled header/cards closer to the original Streamlit dashboard color tone.
+- Server/client helper windows are started minimized to reduce duplicate window clutter; browser opens once to the client URL.
+
+API version: v8-ui-sort-refine

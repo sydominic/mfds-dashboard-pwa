@@ -1,0 +1,14 @@
+MFDS Regulatory PWA v9
+
+1. Added Supabase REST mode.
+   - Preferred: DATABASE_URL PostgreSQL connection string.
+   - Alternative: SUPABASE_URL + SUPABASE_SERVICE_KEY.
+   - If neither is usable, local-json mode is used.
+
+2. Local launcher no longer opens separate visible API/client windows.
+   - Server and client run hidden in the background.
+   - Check run_local.log, server.log, client.log for details.
+   - Use stop_local.bat to stop ports 8892/5292.
+
+3. Official board cards no longer display board IDs such as m_74.
+   - Each card now uses a board-specific icon and a short user-facing label.

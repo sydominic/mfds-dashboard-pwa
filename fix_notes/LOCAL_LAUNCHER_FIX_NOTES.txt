@@ -1,0 +1,25 @@
+MFDS Regulatory PWA v4 local launcher fix
+
+Changes:
+- Fixed npm.cmd behavior in Windows batch files.
+  npm must be executed with CALL from inside another .bat file.
+  v3 ended after npm -v at step [2/9].
+- Replaced Korean console messages with English to avoid mojibake in Windows CMD.
+- Added chcp 65001 to launcher files.
+- Kept local ports: API 8892, React 5292.
+
+Logs:
+- run_local.log
+- server.log
+- client.log
+
+Run:
+1. Extract the zip completely.
+2. Put .env with DATABASE_URL in the root if PostgreSQL/Supabase mode is needed.
+3. Run run_local.bat.
+
+
+v5 changes
+- Fixed PowerShell variable parsing in scripts/stop-ports.ps1 (${port} syntax).
+- Pinned @vitejs/plugin-react to 4.3.4 because latest 6.x requires Vite 8 and breaks npm install with Vite 5.
+- Added --legacy-peer-deps for client install as a safety net on newer npm versions.

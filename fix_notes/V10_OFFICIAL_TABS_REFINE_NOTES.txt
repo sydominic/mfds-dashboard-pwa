@@ -1,0 +1,12 @@
+MFDS Regulatory PWA v10 - Official Boards / Tabs refinement
+
+Changes:
+1. Removed the repeated text "공식 게시판 바로가기" from official board cards.
+2. Kept each official board card as icon + board name + external-link icon.
+3. Refined top tabs with the same blue/cyan/green/amber accent gradient used in cards.
+4. Updated API version to v10-official-tabs-refine.
+
+Local check:
+- run_local.bat
+- http://127.0.0.1:8892/api/health
+- http://127.0.0.1:5292

@@ -1,0 +1,14 @@
+MFDS Regulatory PWA v6 local runtime fix
+
+Fixes:
+1. server/src/index.js syntax error in .env loader split(/\r?\n/) fixed.
+2. start_server.bat no longer uses PowerShell Tee-Object to run Node.
+   This avoids UTF-16/NUL-style log output and native command error wrapping.
+3. start_client.bat no longer uses PowerShell Tee-Object to run Vite.
+4. run_local_core.bat tail-log logic made safer so empty Test-Path errors do not appear.
+
+Run:
+1. Copy .env containing DATABASE_URL into this folder.
+2. Run run_local.bat.
+3. API: http://127.0.0.1:8892/api/health
+4. UI:  http://127.0.0.1:5292

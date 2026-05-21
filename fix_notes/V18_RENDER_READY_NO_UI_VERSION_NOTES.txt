@@ -1,0 +1,6 @@
+V18 반영사항
+1. 화면 hero 영역의 UI 버전 표시 제거
+2. API version: v18-render-ready-no-ui-version
+3. Render 업로드 준비 구조 정리
+4. 실제 key는 .env 또는 Render Environment Variables에만 입력
+5. fix_notes 폴더에 변경사항 메모 정리

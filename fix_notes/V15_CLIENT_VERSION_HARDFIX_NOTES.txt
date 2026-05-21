@@ -1,0 +1,9 @@
+V15 반영사항
+1. 화면에서 현재 UI 버전 표시: UI v15-client-version-hardfix
+2. API 버전: v15-client-version-hardfix
+3. 로컬 확인 포트 분리: API 8892, React 5292
+4. run_local 실행 시 기존 8890/5290/8891/5291/8892/5292 포트 정리
+5. 모바일에서 조회조건/KPI는 식약처 정보 탭(tab=main)일 때만 렌더링
+6. 모바일 구분별 정보는 select 방식 유지, 공식게시판은 compact 2열 카드 유지
+7. PC 구분 칩은 줄바꿈 대신 가로 스크롤 처리
+8. 공식 게시판 카드의 '공식 게시판 바로가기' 문구는 src/dist 모두 없음
