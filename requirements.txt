@@ -1,0 +1,9 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+lxml
+openpyxl
+urllib3
+SQLAlchemy>=2.0
+psycopg2-binary

@@ -1,19 +1,14 @@
 services:
   - type: web
-    name: mfds-regulatory-pwa
-    env: node
+    name: kmfds-information-dashboard
+    runtime: python
     plan: free
-    buildCommand: bash render-build.sh
-    startCommand: node server/src/index.js
-    healthCheckPath: /api/health
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "bash start.sh"
     envVars:
-      - key: NODE_VERSION
-        value: 20.11.1
-      - key: DATABASE_URL
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.15
       - key: AUTO_COLLECT_ON_LOAD
         value: "false"
+      - key: DATABASE_URL
+        sync: false

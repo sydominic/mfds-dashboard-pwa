@@ -1,39 +1,23 @@
 @echo off
-chcp 65001 >nul
-setlocal EnableExtensions
+setlocal
 cd /d "%~dp0"
-title MFDS Regulatory PWA - Local Launcher
+chcp 65001 >nul
+title MFDS Dashboard Local
 
-set "RUN_LOG=run_local.log"
-> "%RUN_LOG%" echo ==================================================
->> "%RUN_LOG%" echo %date% %time% MFDS Regulatory PWA local launch started
->> "%RUN_LOG%" echo App folder initialized
->> "%RUN_LOG%" echo ==================================================
+echo [1/4] Checking Python...
+python --version || goto :err
 
-if not exist "%RUN_LOG%" (
-  echo ERROR: Cannot create run_local.log in this folder.
-  echo Extract the zip to a normal local folder and run again.
-  pause
-  exit /b 1
-)
+echo [2/4] Installing requirements...
+python -m pip install -r requirements.txt || goto :err
 
-echo ==================================================
-echo  MFDS Regulatory PWA Local Launcher
-echo ==================================================
+echo [3/4] Starting Streamlit...
+echo Local URL: http://localhost:8501
+python -m streamlit run app.py --server.port 8501 --server.address=0.0.0.0 --browser.gatherUsageStats=false
+goto :end
+
+:err
 echo.
-echo This window will stay open if an error occurs.
-echo Logs: run_local.log / server.log / client.log
-echo.
-
-call "%~dp0scripts\run_local_core.bat"
-set "EXIT_CODE=%ERRORLEVEL%"
-
-echo.
-echo ==================================================
-echo Exit code: %EXIT_CODE%
-echo Check logs: run_local.log, server.log, client.log
-echo ==================================================
-echo.
->> "%RUN_LOG%" echo %date% %time% Launcher finished with exit code %EXIT_CODE%
+echo ERROR occurred. Check the message above.
 pause
-exit /b %EXIT_CODE%
+
+:end

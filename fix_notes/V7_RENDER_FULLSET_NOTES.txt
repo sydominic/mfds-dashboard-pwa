@@ -1,0 +1,31 @@
+V7_RENDER_FULLSET_NOTES
+
+목적:
+- Render 배포용 전체 세트 보강
+- 단순 4파일 세트가 아니라 Render 실행/문서/환경변수 예시/로컬 점검 파일 포함
+
+포함:
+- app.py
+- requirements.txt
+- render.yaml
+- start.sh
+- runtime.txt
+- .streamlit/config.toml
+- README.md
+- README_RENDER.md
+- SECRETS_EXAMPLE.txt
+- .env.example
+- .env.render.example
+- supabase_schema.sql
+- run_local.bat
+- check_local.bat
+- docs/
+- fix_notes/
+- scripts/
+- data/.gitkeep
+- logs/.gitkeep
+- output/.gitkeep
+
+주의:
+- client/server React 구조가 아니다.
+- 현재 앱은 Streamlit + Supabase + Render 구조다.

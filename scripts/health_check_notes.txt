@@ -1,0 +1,9 @@
+Render log checkpoints:
+1. Python dependencies installed
+2. Starting MFDS Regulatory Dashboard on Render...
+3. Uvicorn server started
+4. App page shows DB mode and buttons
+
+If DB connection fails, check Render Environment Variables:
+- DATABASE_URL
+- AUTO_COLLECT_ON_LOAD
