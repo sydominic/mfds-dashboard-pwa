@@ -688,129 +688,134 @@ def parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, 
 
 def parse_mfds_items_from_text_lines(soup, page_url, start_date, end_date, board_id, category):
     """
-    최종 fallback 파서.
-    식약처 실제 목록은 다음처럼 텍스트가 펼쳐짐:
-      게시번호 → 제목 → 담당부서/조회수 → 첨부파일/미리보기/다운받기 → 등록일
-    DOM block 매칭이 실패해도 텍스트 라인 순서로 게시번호-제목-날짜를 재구성한다.
+    v10 fallback 파서.
+    v8/v9의 '게시번호 marker → block → 날짜' 방식은 조회수 숫자(예: 161)가 게시번호로 오인되면
+    block이 날짜 전에 끊겨 0건이 될 수 있었다.
+
+    이번 방식은 반대로 '순수 등록일 라인'을 먼저 찾고, 그 위쪽 30줄 안에서 가장 가까운 정상 제목을 찾는다.
+    식약처 목록 구조가 제목→담당부서→조회수→첨부파일→등록일 순서이므로 이 방식이 더 안정적이다.
     """
     rows = []
     page_dates = []
-    # v9 핵심 변경:
-    # #contents/.content 등 본문영역 추정이 Render에서 실제 목록 영역과 어긋날 수 있어
-    # 텍스트 fallback은 전체 soup 기준으로 수행한다.
-    main_area = soup
-    anchor_index = build_mfds_anchor_index(soup, page_url)
 
+    anchor_index = build_mfds_anchor_index(soup, page_url)
     raw_lines = soup.get_text("\n", strip=True).splitlines()
     lines = [norm(x) for x in raw_lines if norm(x)]
 
-    def is_item_marker(line):
-        # 보도자료: 4361, 공지: 2564, 공지사항 등
-        if re.fullmatch(r"\d{3,7}", line):
+    def parse_pure_date_line(line):
+        t = norm(line)
+        m = re.fullmatch(r"(20\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})", t)
+        if not m:
+            return None
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+
+    def is_noise_line(line):
+        t = norm(line)
+        if not t:
             return True
-        if line in ["공지사항"]:
+        noise_exact = {
+            "새로운게시물", "펼치기", "접기", "미리보기", "다운받기",
+            "검색어 검색", "닫기", "열기", "전체", "공통", "식품", "의약품",
+            "의료기기", "바이오", "화장품", "한약", "위생용품", "백신치료제", "의약외품",
+            "제목 내용 담당부서", "제목", "내용", "담당부서"
+        }
+        if t in noise_exact:
+            return True
+        if t.startswith("담당부서") or t.startswith("조회수"):
+            return True
+        if t.startswith("분야별선택") or t.startswith("등록번호입력예시"):
+            return True
+        if "특수문자 검색 불가" in t:
+            return True
+        if re.fullmatch(r"\d{1,7}", t):
+            return True
+        if re.fullmatch(r"조회수\s*\|\s*\d+", t):
+            return True
+        if re.search(r"\.(pdf|hwpx|hwp|docx|xlsx|xls|zip|png|jpg|jpeg)$", t, re.I):
+            return True
+        if "미리보기" in t or "다운받기" in t:
+            return True
+        if parse_pure_date_line(t):
             return True
         return False
 
-    def is_stop_line(line):
-        if line in ["첫 페이지", "이전 페이지", "다음 페이지", "마지막 페이지"]:
+    def is_list_start_line(line):
+        return bool(re.search(r"전체\s*[0-9,]+\s*건", norm(line)))
+
+    def is_list_end_line(line):
+        t = norm(line)
+        if t in ["첫 페이지", "이전 페이지", "다음 페이지", "마지막 페이지", "개인정보처리방침", "저작권정책", "TOP"]:
             return True
-        if line in ["개인정보처리방침", "저작권정책", "부서별전화번호", "TOP"]:
+        if "Copyright" in t or "종합상담센터" in t:
             return True
         return False
 
-    def is_meta_line(line):
-        if not line:
-            return True
-        if line in ["새로운게시물", "펼치기", "접기", "미리보기", "다운받기"]:
-            return True
-        if line.startswith("담당부서") or line.startswith("조회수"):
-            return True
-        if line.startswith("분야별선택") or line.startswith("제목 내용"):
-            return True
-        if "등록번호입력예시" in line or "특수문자 검색 불가" in line:
-            return True
-        if parse_date_any(line):
-            return True
-        if re.fullmatch(r"\d{1,7}", line):
-            return True
-        if re.search(r"\.(pdf|hwpx|hwp|docx|xlsx|xls|zip|png|jpg|jpeg)$", line, re.I):
-            return True
-        return False
-
-    # 목록 시작 위치: "전체 n 건, 현재페이지" 이후를 우선 사용.
-    # 전체 페이지 기준이므로 검색도움말의 "전체" 같은 문구와 구분하기 위해 숫자+건 패턴을 사용한다.
+    # 목록 시작 위치
     start_idx = 0
     for i, line in enumerate(lines):
-        if re.search(r"전체\s*[0-9,]+\s*건", line):
+        if is_list_start_line(line):
             start_idx = i + 1
             break
 
-    i = start_idx
-    while i < len(lines):
-        line = lines[i]
-        if is_stop_line(line):
+    seen = set()
+
+    for idx in range(start_idx, len(lines)):
+        line = lines[idx]
+        if is_list_end_line(line):
             break
 
-        if not is_item_marker(line):
-            i += 1
+        d = parse_pure_date_line(line)
+        if not d:
             continue
 
-        marker_idx = i
-        j = i + 1
-        block = []
-        while j < len(lines):
-            if j > marker_idx + 1 and is_item_marker(lines[j]):
-                break
-            if is_stop_line(lines[j]):
-                break
-            block.append(lines[j])
-            j += 1
-
-        # block에서 날짜 추출
-        dates = [parse_date_any(x) for x in block if parse_date_any(x)]
-        dates = [d for d in dates if d]
-        if dates:
-            d = dates[-1]
-            page_dates.extend(dates)
-        else:
-            i = max(j, i + 1)
-            continue
+        page_dates.append(d)
 
         if d < start_date or d > end_date:
-            i = max(j, i + 1)
             continue
 
-        # 제목 후보: block 초반에서 첫 정상 텍스트. anchor index에 있는 제목이면 우선.
         title = ""
-        for b in block:
-            cand = normalize_title_key(b)
+
+        # 1차: 위쪽에서 anchor_index에 존재하는 제목 우선
+        scan_start = max(start_idx, idx - 35)
+        for j in range(idx - 1, scan_start - 1, -1):
+            cand = normalize_title_key(lines[j])
+            if is_noise_line(cand):
+                continue
             if cand in anchor_index and is_valid_mfds_title(cand):
                 title = cand
                 break
 
+        # 2차: anchor_index 완전일치가 안 되면 일반 정상 제목 후보
         if not title:
-            for b in block[:8]:
-                cand = normalize_title_key(b)
-                if is_meta_line(cand):
+            for j in range(idx - 1, scan_start - 1, -1):
+                cand = normalize_title_key(lines[j])
+                if is_noise_line(cand):
                     continue
                 if is_valid_mfds_title(cand):
                     title = cand
                     break
 
-        if title:
-            link = find_link_for_title(title, anchor_index, page_url)
-            rows.append({
-                "site": "식약처",
-                "category": category,
-                "board_id": board_id,
-                "item_date": d.isoformat(),
-                "title": title,
-                "url": link,
-                "_parser": "text",
-            })
+        if not title:
+            continue
 
-        i = max(j, i + 1)
+        link = find_link_for_title(title, anchor_index, page_url)
+        key = f"{d.isoformat()}|{title}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rows.append({
+            "site": "식약처",
+            "category": category,
+            "board_id": board_id,
+            "item_date": d.isoformat(),
+            "title": title,
+            "url": link,
+            "_parser": "dateback",
+        })
 
     return rows, page_dates
 
@@ -870,7 +875,7 @@ def parse_mfds_board_page(src, page_url, start_date, end_date):
         write_log(
             f"MFDS {board_id} page parse: html_len={len(html_text or '')}, "
             f"lines={len(full_text_lines)}, total_marker={has_total_marker}, "
-            f"tr={len(tr_rows)}, card={len(card_rows)}, text={len(text_rows)}, "
+            f"tr={len(tr_rows)}, card={len(card_rows)}, dateback={len(text_rows)}, "
             f"deduped={len(deduped)}, latest_date={first_date}"
         )
         return deduped, page_dates
@@ -988,7 +993,7 @@ def collect_mfds_to_db(start_date, end_date, collect_mode="period"):
             "전체건표식": "Y" if dbg.get("has_total_marker") else "N",
             "TR": dbg.get("tr", 0),
             "CARD": dbg.get("card", 0),
-            "TEXT": dbg.get("text", 0),
+            "DATEBACK": dbg.get("text", 0),
             "오류": dbg.get("error", ""),
         })
 
@@ -1025,7 +1030,7 @@ def render_collect_report():
                 "전체건표식": st.column_config.TextColumn("전체건표식", width="small"),
                 "TR": st.column_config.NumberColumn("TR", width="small"),
                 "CARD": st.column_config.NumberColumn("CARD", width="small"),
-                "TEXT": st.column_config.NumberColumn("TEXT", width="small"),
+                "DATEBACK": st.column_config.NumberColumn("DATEBACK", width="small"),
                 "오류": st.column_config.TextColumn("오류", width="large"),
             },
         )
