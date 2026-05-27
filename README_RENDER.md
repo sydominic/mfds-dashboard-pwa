@@ -104,3 +104,15 @@ Render Service
 에서 확인합니다.
 
 DB 연결 문제는 앱 화면에도 안내가 표시되도록 되어 있습니다.
+
+
+## v8 추가 안내
+수집이 계속 5/22 등 과거 날짜에서 멈추는 경우, 빠른수집 후 `게시판별 수집 결과 보기`와 Render Logs를 같이 확인하십시오.
+
+Render Logs 확인 문자열:
+```text
+MFDS m_99 page parse
+MFDS m_74 page parse
+```
+
+`text=` 값이 1 이상이면 신규 fallback 파서가 동작한 것입니다.

@@ -461,14 +461,19 @@ def is_valid_mfds_title(title):
         "다운받기", "미리보기", "첨부파일", "새로운게시물", "파일첨부",
         "목록", "페이스북", "트위터", "인쇄", "공유", "카카오",
         "부서별직원안내", "부산청인스타그램", "식약처 인스타그램",
-        "유튜브", "블로그", "누리집", "처음으로", "페이지"
+        "유튜브", "블로그", "누리집", "처음으로", "페이지",
+        "검색어 검색", "제목 내용 담당부서", "분야별선택", "특수문자 검색 불가"
     ]
     if any(w in t for w in bad_words):
         return False
 
     if re.fullmatch(r"20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2}", t):
         return False
-    if re.fullmatch(r"\d{4,}", t):
+    if re.fullmatch(r"\d{1,7}", t):
+        return False
+    if re.search(r"\.(pdf|hwpx|hwp|docx|xlsx|xls|zip|png|jpg|jpeg)$", t, re.I):
+        return False
+    if t.startswith("담당부서") or t.startswith("조회수"):
         return False
     if len(t) < 5:
         return False
@@ -482,6 +487,82 @@ def extract_seq_from_url(url):
 
 def normalize_item_url(base_url, href):
     return urljoin(base_url, href or "")
+
+
+def normalize_title_key(title):
+    t = norm(title)
+    t = t.replace("새로운게시물", "").strip()
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def mfds_main_area(soup):
+    return (
+        soup.select_one("#contents")
+        or soup.select_one("#content")
+        or soup.select_one("main")
+        or soup.select_one(".content")
+        or soup.select_one(".contents")
+        or soup.select_one(".board-list")
+        or soup.select_one(".board_list")
+        or soup
+    )
+
+
+def build_mfds_anchor_index(soup, page_url):
+    """
+    제목 텍스트 → view URL 매핑.
+    식약처 페이지는 목록 텍스트와 링크가 분리되어 보여도 a 태그에는 view.do URL이 있음.
+    """
+    index = {}
+    candidates = []
+
+    for a in soup.find_all("a"):
+        href = a.get("href") or ""
+        onclick = a.get("onclick") or ""
+        raw_text = norm(a.get_text(" ", strip=True))
+        title = normalize_title_key(raw_text)
+
+        if not is_valid_mfds_title(title):
+            continue
+
+        is_view = ("view.do" in href) or ("seq=" in href) or ("itm_seq" in href)
+        seq = extract_seq_from_url(href)
+
+        if not is_view and onclick:
+            m = re.search(r"(?:seq|goView|view)\D+([0-9]{3,})", onclick)
+            if m:
+                seq = m.group(1)
+                is_view = True
+
+        if not is_view:
+            continue
+
+        link = normalize_item_url(page_url, href) if href else page_url
+        if seq and "seq=" not in link:
+            # href가 javascript이거나 seq가 onclick에만 있는 경우 최소 view URL 구성
+            link = normalize_item_url(page_url, f"view.do?page=1&seq={seq}")
+
+        candidates.append((title, link))
+
+    # 긴 제목 우선 저장. 동일 제목 중복 시 첫 링크 유지.
+    for title, link in sorted(candidates, key=lambda x: len(x[0]), reverse=True):
+        index.setdefault(title, link)
+
+    return index
+
+
+def find_link_for_title(title, anchor_index, page_url):
+    key = normalize_title_key(title)
+    if key in anchor_index:
+        return anchor_index[key]
+
+    # 완전 일치가 안 되면 포함관계로 보조 매칭
+    for k, v in anchor_index.items():
+        if key and (key in k or k in key):
+            return v
+
+    return page_url
 
 
 def parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, category):
@@ -503,7 +584,7 @@ def parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, cat
 
         for a in anchors:
             href = a.get("href") or ""
-            atext = norm(a.get_text(" ", strip=True))
+            atext = normalize_title_key(a.get_text(" ", strip=True))
             if not is_valid_mfds_title(atext):
                 continue
             if ("view.do" in href) or ("seq=" in href) or ("itm_seq" in href):
@@ -513,7 +594,7 @@ def parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, cat
         if not title_anchor:
             valid = []
             for a in anchors:
-                atext = norm(a.get_text(" ", strip=True))
+                atext = normalize_title_key(a.get_text(" ", strip=True))
                 if is_valid_mfds_title(atext):
                     valid.append((len(atext), a))
             if valid:
@@ -522,7 +603,7 @@ def parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, cat
         if not title_anchor:
             continue
 
-        title = norm(title_anchor.get_text(" ", strip=True))
+        title = normalize_title_key(title_anchor.get_text(" ", strip=True))
         link = normalize_item_url(page_url, title_anchor.get("href") or page_url)
 
         rows.append({
@@ -532,6 +613,7 @@ def parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, cat
             "item_date": d.isoformat(),
             "title": title,
             "url": link,
+            "_parser": "tr",
         })
 
     return rows, page_dates
@@ -541,15 +623,7 @@ def parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, 
     rows = []
     page_dates = []
     candidates = []
-
-    main_area = (
-        soup.select_one("#contents")
-        or soup.select_one("#content")
-        or soup.select_one(".content")
-        or soup.select_one(".board-list")
-        or soup.select_one(".board_list")
-        or soup
-    )
+    main_area = mfds_main_area(soup)
 
     candidates.extend(main_area.find_all("li"))
     candidates.extend(main_area.find_all("div", class_=re.compile(r"(list|board|item|bbs|news)", re.I)))
@@ -581,7 +655,7 @@ def parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, 
         title_candidates = []
         for a in anchors:
             href = a.get("href") or ""
-            atext = norm(a.get_text(" ", strip=True))
+            atext = normalize_title_key(a.get_text(" ", strip=True))
             if not is_valid_mfds_title(atext):
                 continue
 
@@ -596,7 +670,7 @@ def parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, 
             continue
 
         title_anchor = sorted(title_candidates, key=lambda x: x[0], reverse=True)[0][1]
-        title = norm(title_anchor.get_text(" ", strip=True))
+        title = normalize_title_key(title_anchor.get_text(" ", strip=True))
         link = normalize_item_url(page_url, title_anchor.get("href") or page_url)
 
         rows.append({
@@ -606,7 +680,133 @@ def parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, 
             "item_date": d.isoformat(),
             "title": title,
             "url": link,
+            "_parser": "card",
         })
+
+    return rows, page_dates
+
+
+def parse_mfds_items_from_text_lines(soup, page_url, start_date, end_date, board_id, category):
+    """
+    최종 fallback 파서.
+    식약처 실제 목록은 다음처럼 텍스트가 펼쳐짐:
+      게시번호 → 제목 → 담당부서/조회수 → 첨부파일/미리보기/다운받기 → 등록일
+    DOM block 매칭이 실패해도 텍스트 라인 순서로 게시번호-제목-날짜를 재구성한다.
+    """
+    rows = []
+    page_dates = []
+    main_area = mfds_main_area(soup)
+    anchor_index = build_mfds_anchor_index(main_area, page_url)
+
+    raw_lines = main_area.get_text("\n", strip=True).splitlines()
+    lines = [norm(x) for x in raw_lines if norm(x)]
+
+    def is_item_marker(line):
+        # 보도자료: 4361, 공지: 2564, 공지사항 등
+        if re.fullmatch(r"\d{3,7}", line):
+            return True
+        if line in ["공지사항"]:
+            return True
+        return False
+
+    def is_stop_line(line):
+        if line in ["첫 페이지", "이전 페이지", "다음 페이지", "마지막 페이지"]:
+            return True
+        if line in ["개인정보처리방침", "저작권정책", "부서별전화번호", "TOP"]:
+            return True
+        return False
+
+    def is_meta_line(line):
+        if not line:
+            return True
+        if line in ["새로운게시물", "펼치기", "접기", "미리보기", "다운받기"]:
+            return True
+        if line.startswith("담당부서") or line.startswith("조회수"):
+            return True
+        if line.startswith("분야별선택") or line.startswith("제목 내용"):
+            return True
+        if "등록번호입력예시" in line or "특수문자 검색 불가" in line:
+            return True
+        if parse_date_any(line):
+            return True
+        if re.fullmatch(r"\d{1,7}", line):
+            return True
+        if re.search(r"\.(pdf|hwpx|hwp|docx|xlsx|xls|zip|png|jpg|jpeg)$", line, re.I):
+            return True
+        return False
+
+    # 목록 시작 위치: "전체 n 건" 이후를 우선 사용
+    start_idx = 0
+    for i, line in enumerate(lines):
+        if re.search(r"전체\s*[0-9,]+\s*건", line):
+            start_idx = i + 1
+            break
+
+    i = start_idx
+    while i < len(lines):
+        line = lines[i]
+        if is_stop_line(line):
+            break
+
+        if not is_item_marker(line):
+            i += 1
+            continue
+
+        marker_idx = i
+        j = i + 1
+        block = []
+        while j < len(lines):
+            if j > marker_idx + 1 and is_item_marker(lines[j]):
+                break
+            if is_stop_line(lines[j]):
+                break
+            block.append(lines[j])
+            j += 1
+
+        # block에서 날짜 추출
+        dates = [parse_date_any(x) for x in block if parse_date_any(x)]
+        dates = [d for d in dates if d]
+        if dates:
+            d = dates[-1]
+            page_dates.extend(dates)
+        else:
+            i = max(j, i + 1)
+            continue
+
+        if d < start_date or d > end_date:
+            i = max(j, i + 1)
+            continue
+
+        # 제목 후보: block 초반에서 첫 정상 텍스트. anchor index에 있는 제목이면 우선.
+        title = ""
+        for b in block:
+            cand = normalize_title_key(b)
+            if cand in anchor_index and is_valid_mfds_title(cand):
+                title = cand
+                break
+
+        if not title:
+            for b in block[:8]:
+                cand = normalize_title_key(b)
+                if is_meta_line(cand):
+                    continue
+                if is_valid_mfds_title(cand):
+                    title = cand
+                    break
+
+        if title:
+            link = find_link_for_title(title, anchor_index, page_url)
+            rows.append({
+                "site": "식약처",
+                "category": category,
+                "board_id": board_id,
+                "item_date": d.isoformat(),
+                "title": title,
+                "url": link,
+                "_parser": "text",
+            })
+
+        i = max(j, i + 1)
 
     return rows, page_dates
 
@@ -623,21 +823,32 @@ def parse_mfds_board_page(src, page_url, start_date, end_date):
 
         tr_rows, tr_dates = parse_mfds_items_from_tr(soup, page_url, start_date, end_date, board_id, category)
         card_rows, card_dates = parse_mfds_items_from_cards(soup, page_url, start_date, end_date, board_id, category)
+        text_rows, text_dates = parse_mfds_items_from_text_lines(soup, page_url, start_date, end_date, board_id, category)
 
         rows.extend(tr_rows)
         rows.extend(card_rows)
+        rows.extend(text_rows)
         page_dates.extend(tr_dates)
         page_dates.extend(card_dates)
+        page_dates.extend(text_dates)
 
+        # 페이지 내 중복 제거: seq 우선, 없으면 날짜+제목
         deduped = []
         seen = set()
+        parser_counts = {"tr": 0, "card": 0, "text": 0}
         for r in rows:
             seq = extract_seq_from_url(r.get("url", ""))
             key = seq or f"{r.get('item_date','')}|{r.get('title','')}"
             if key not in seen:
                 seen.add(key)
+                parser_counts[r.get("_parser", "unknown")] = parser_counts.get(r.get("_parser", "unknown"), 0) + 1
+                r.pop("_parser", None)
                 deduped.append(r)
 
+        write_log(
+            f"MFDS {board_id} page parse: tr={len(tr_rows)}, card={len(card_rows)}, "
+            f"text={len(text_rows)}, deduped={len(deduped)}"
+        )
         return deduped, page_dates
 
     except Exception as e:

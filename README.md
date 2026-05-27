@@ -157,3 +157,10 @@ Start Command: bash start.sh
 
 주의:
 이 세트는 React/Node(client/server) 구조가 아니라 Streamlit + Supabase + Render 구조입니다.
+
+
+## v8 수정사항
+- 식약처 수집 누락 원인 대응: 텍스트 라인 fallback 파서를 추가했습니다.
+- 제목→담당부서/조회수→첨부파일→날짜로 펼쳐지는 식약처 목록 구조를 직접 재구성합니다.
+- 기존 tr/card 파서가 실패해도 게시번호→제목→날짜 패턴으로 보도자료, 공지 등 최신글을 잡도록 보강했습니다.
+- Render Logs에 파서별 수집 건수 로그를 남깁니다.
