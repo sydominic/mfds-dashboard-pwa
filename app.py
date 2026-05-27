@@ -695,10 +695,13 @@ def parse_mfds_items_from_text_lines(soup, page_url, start_date, end_date, board
     """
     rows = []
     page_dates = []
-    main_area = mfds_main_area(soup)
-    anchor_index = build_mfds_anchor_index(main_area, page_url)
+    # v9 핵심 변경:
+    # #contents/.content 등 본문영역 추정이 Render에서 실제 목록 영역과 어긋날 수 있어
+    # 텍스트 fallback은 전체 soup 기준으로 수행한다.
+    main_area = soup
+    anchor_index = build_mfds_anchor_index(soup, page_url)
 
-    raw_lines = main_area.get_text("\n", strip=True).splitlines()
+    raw_lines = soup.get_text("\n", strip=True).splitlines()
     lines = [norm(x) for x in raw_lines if norm(x)]
 
     def is_item_marker(line):
@@ -735,7 +738,8 @@ def parse_mfds_items_from_text_lines(soup, page_url, start_date, end_date, board
             return True
         return False
 
-    # 목록 시작 위치: "전체 n 건" 이후를 우선 사용
+    # 목록 시작 위치: "전체 n 건, 현재페이지" 이후를 우선 사용.
+    # 전체 페이지 기준이므로 검색도움말의 "전체" 같은 문구와 구분하기 위해 숫자+건 패턴을 사용한다.
     start_idx = 0
     for i, line in enumerate(lines):
         if re.search(r"전체\s*[0-9,]+\s*건", line):
@@ -845,13 +849,44 @@ def parse_mfds_board_page(src, page_url, start_date, end_date):
                 r.pop("_parser", None)
                 deduped.append(r)
 
+        full_text_lines = [norm(x) for x in soup.get_text("\n", strip=True).splitlines() if norm(x)]
+        has_total_marker = any(re.search(r"전체\s*[0-9,]+\s*건", x) for x in full_text_lines)
+        first_date = ""
+        all_dates = [d.isoformat() for d in page_dates if d]
+        if all_dates:
+            first_date = max(all_dates)
+
+        src["_last_debug"] = {
+            "html_len": len(html_text or ""),
+            "line_count": len(full_text_lines),
+            "has_total_marker": has_total_marker,
+            "tr": len(tr_rows),
+            "card": len(card_rows),
+            "text": len(text_rows),
+            "deduped": len(deduped),
+            "latest_date_on_page": first_date,
+        }
+
         write_log(
-            f"MFDS {board_id} page parse: tr={len(tr_rows)}, card={len(card_rows)}, "
-            f"text={len(text_rows)}, deduped={len(deduped)}"
+            f"MFDS {board_id} page parse: html_len={len(html_text or '')}, "
+            f"lines={len(full_text_lines)}, total_marker={has_total_marker}, "
+            f"tr={len(tr_rows)}, card={len(card_rows)}, text={len(text_rows)}, "
+            f"deduped={len(deduped)}, latest_date={first_date}"
         )
         return deduped, page_dates
 
     except Exception as e:
+        src["_last_debug"] = {
+            "html_len": 0,
+            "line_count": 0,
+            "has_total_marker": False,
+            "tr": 0,
+            "card": 0,
+            "text": 0,
+            "deduped": 0,
+            "latest_date_on_page": "",
+            "error": str(e)[:200],
+        }
         write_log(f"MFDS {board_id} 페이지 실패 {page_url}: {e}")
         return rows, page_dates
 
@@ -939,6 +974,7 @@ def collect_mfds_to_db(start_date, end_date, collect_mode="period"):
         rows.extend(board_rows)
 
         latest_date = max([r.get("item_date", "") for r in board_rows], default="")
+        dbg = src.get("_last_debug", {}) or {}
         board_reports.append({
             "구분": category,
             "게시판ID": board_id,
@@ -946,6 +982,14 @@ def collect_mfds_to_db(start_date, end_date, collect_mode="period"):
             "신규": inserted,
             "중복": skipped,
             "최신게시일": latest_date,
+            "페이지최신일": dbg.get("latest_date_on_page", ""),
+            "HTML크기": dbg.get("html_len", 0),
+            "라인수": dbg.get("line_count", 0),
+            "전체건표식": "Y" if dbg.get("has_total_marker") else "N",
+            "TR": dbg.get("tr", 0),
+            "CARD": dbg.get("card", 0),
+            "TEXT": dbg.get("text", 0),
+            "오류": dbg.get("error", ""),
         })
 
         time.sleep(0.15)
@@ -963,7 +1007,7 @@ def render_collect_report():
     if df_report.empty:
         return
 
-    with st.expander("게시판별 수집 결과 보기", expanded=False):
+    with st.expander("게시판별 수집 결과 / 파서 진단 보기", expanded=False):
         st.dataframe(
             df_report,
             hide_index=True,
@@ -975,6 +1019,14 @@ def render_collect_report():
                 "신규": st.column_config.NumberColumn("신규", width="small"),
                 "중복": st.column_config.NumberColumn("중복", width="small"),
                 "최신게시일": st.column_config.TextColumn("최신게시일", width="small"),
+                "페이지최신일": st.column_config.TextColumn("페이지최신일", width="small"),
+                "HTML크기": st.column_config.NumberColumn("HTML크기", width="small"),
+                "라인수": st.column_config.NumberColumn("라인수", width="small"),
+                "전체건표식": st.column_config.TextColumn("전체건표식", width="small"),
+                "TR": st.column_config.NumberColumn("TR", width="small"),
+                "CARD": st.column_config.NumberColumn("CARD", width="small"),
+                "TEXT": st.column_config.NumberColumn("TEXT", width="small"),
+                "오류": st.column_config.TextColumn("오류", width="large"),
             },
         )
 
