@@ -130,6 +130,8 @@ function App() {
   const [collecting, setCollecting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [collectReport, setCollectReport] = useState([]);
+  const [apiVersion, setApiVersion] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const dataRequestRef = useRef(0);
 
@@ -157,6 +159,7 @@ function App() {
       ]);
       if (requestId !== dataRequestRef.current) return;
       setStats(statsData);
+      setApiVersion(statsData?.apiVersion || listData?.apiVersion || '');
       setItems(listData);
       setCategoryItems(categoryData);
     } catch (err) {
@@ -189,7 +192,9 @@ function App() {
     try {
       const range = periodDatesForClient(filters.period, filters.startDate, filters.endDate);
       const data = await apiPost('/api/collect', { mode, ...range });
-      setMessage(`${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건`);
+      setCollectReport(data.boardResults || []);
+      setApiVersion(data.apiVersion || apiVersion);
+      setMessage(`${data.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건`);
       await loadOptions();
       await loadData(1, 1, filters);
     } catch (err) {
@@ -238,6 +243,7 @@ function App() {
             <span><i className="dot dot-blue" /> MFDS</span>
             <span><i className="dot dot-green" /> {stats?.totalStored !== undefined ? 'DB 연결됨' : 'DB 확인 중'}</span>
             <span><i className="dot dot-amber" /> 마지막 수집: {stats?.lastCollected || '-'}</span>
+            <span><i className="dot dot-blue" /> {apiVersion || 'api 확인 중'}</span>
           </div>
         </div>
       </header>
@@ -262,6 +268,7 @@ function App() {
       {error && <div className="notice error">{error}</div>}
       {loading && <div className="notice info">데이터를 조회하는 중입니다.</div>}
       {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. 기간수집은 시간이 걸릴 수 있습니다.</div>}
+      <CollectDiagnostics report={collectReport} apiVersion={apiVersion} />
 
       <section className="stat-grid desktop-only">
         <Metric title="오늘 신규" value={headerStats.today} sub="오늘 게시 기준" icon={<FileText size={19} />} />
@@ -328,6 +335,21 @@ function App() {
       </nav>
     </div>
   );
+}
+
+
+function CollectDiagnostics({ report, apiVersion }) {
+  return <section className="card collect-diagnostics">
+    <details open>
+      <summary>게시판별 수집 결과 / 파서 진단 {apiVersion ? `(${apiVersion})` : ''}</summary>
+      {!report?.length ? <p className="empty-text">아직 이 화면에서 수집 결과가 없습니다. 빠른수집 또는 기간수집 후 게시판별 확인/신규/중복 및 HTML 진단이 표시됩니다.</p> :
+        <div className="diagnostic-table-wrap"><table className="diagnostic-table"><thead><tr>
+          <th>구분</th><th>ID</th><th>확인</th><th>신규</th><th>중복</th><th>최신게시일</th><th>페이지최신일</th><th>HTML</th><th>라인</th><th>전체건</th><th>ANCHOR</th><th>DATEBACK</th><th>오류</th>
+        </tr></thead><tbody>{report.map((r, idx) => <tr key={`${r.board_id || idx}`}>
+          <td>{r.category}</td><td>{r.board_id}</td><td>{numberFmt(r.checked)}</td><td>{numberFmt(r.inserted)}</td><td>{numberFmt(r.skipped)}</td><td>{r.latestDate || '-'}</td><td>{r.latestPageDate || '-'}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker || '-'}</td><td>{numberFmt(r.anchorRows)}</td><td>{numberFmt(r.datebackRows)}</td><td className="diag-error">{r.error || ''}</td>
+        </tr>)}</tbody></table></div>}
+    </details>
+  </section>;
 }
 
 function Metric({ title, value, sub, icon }) {

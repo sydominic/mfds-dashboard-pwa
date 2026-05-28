@@ -1,29 +1,38 @@
-# Render 배포 절차
+# MFDS Regulatory PWA - Render 무료 배포
 
-## 1. GitHub 업로드
-ZIP 압축을 풀고 파일 전체를 repository root에 업로드합니다.
+## 서비스 종류
+Render에서는 Static Site가 아니라 **Web Service**로 생성합니다.
 
-## 2. Render Web Service
-기존 서비스를 쓰는 경우 아래 설정을 확인합니다.
+## 필수 설정
 
 Build Command:
-```bash
-pip install -r requirements.txt
+```text
+bash render-build.sh
 ```
 
 Start Command:
-```bash
-bash start.sh
+```text
+node server/src/index.js
 ```
 
-## 3. Environment Variables
-Render > Service > Environment에서 입력합니다.
+Health Check Path:
+```text
+/api/health
+```
+
+## 필수 Environment Variables
 
 ```text
-DATABASE_URL=postgresql://postgres.PROJECT_REF:DB_PASSWORD@aws-1-ap-south-1.pooler.supabase.com:6543/postgres
-AUTO_COLLECT_ON_LOAD=false
-PYTHON_VERSION=3.11.15
+DATABASE_URL = Supabase PostgreSQL connection string
+NODE_VERSION = 20.11.1
 ```
 
-## 4. 배포
-Manual Deploy 또는 GitHub push 자동 배포를 사용합니다.
+선택:
+```text
+AUTO_COLLECT_ON_LOAD = false
+```
+
+## 주의
+- `PORT`는 Render가 자동으로 주입하므로 직접 넣지 않습니다.
+- 이 앱은 Supabase API key가 아니라 PostgreSQL `DATABASE_URL`을 사용합니다.
+- 기존 Streamlit v7에서 사용한 `DATABASE_URL` 또는 `SUPABASE_DB_URL`과 같은 값을 사용하면 됩니다.

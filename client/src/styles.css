@@ -362,3 +362,50 @@ tr:nth-child(even) td { background: #fbfdff; }
   .board-card strong { font-size: 12.5px !important; line-height: 1.25 !important; }
   .board-open-icon { width: 13px !important; height: 13px !important; }
 }
+
+/* v20 collection diagnostics */
+.collect-diagnostics {
+  margin: 14px 0 18px;
+  padding: 14px 16px;
+}
+.collect-diagnostics summary {
+  cursor: pointer;
+  font-weight: 900;
+  color: #071A3D;
+  list-style-position: inside;
+}
+.collect-diagnostics .empty-text {
+  margin: 12px 0 2px;
+}
+.diagnostic-table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+  border: 1px solid rgba(217, 227, 242, .9);
+  border-radius: 14px;
+}
+.diagnostic-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.diagnostic-table th,
+.diagnostic-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #E8EEF7;
+  text-align: left;
+  white-space: nowrap;
+}
+.diagnostic-table th {
+  background: #F7FAFF;
+  color: #071A3D;
+  font-weight: 900;
+}
+.diagnostic-table td {
+  color: #22314C;
+}
+.diagnostic-table .diag-error {
+  white-space: normal;
+  min-width: 180px;
+  max-width: 360px;
+}

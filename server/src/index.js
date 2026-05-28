@@ -48,7 +48,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v19-date-filter-statefix';
+const API_VERSION = 'v20-node-mfds-parser-diagnostics';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
@@ -305,59 +305,293 @@ async function fetchHtml(url, timeoutMs = 12000) {
   throw lastError;
 }
 
+
+function cleanMfdsTitle(title) {
+  return norm(title).replace(/새로운게시물/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function isPureDateLine(line) {
+  const t = norm(line);
+  return /^20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2}$/.test(t);
+}
+
+function isValidMfdsTitle(title) {
+  const t = cleanMfdsTitle(title);
+  if (isBadTitle(t)) return false;
+  if (isPureDateLine(t)) return false;
+  if (/^\d{1,7}$/.test(t)) return false;
+  if (/^조회수\s*\|?\s*\d+/i.test(t)) return false;
+  if (/^담당부서\s*\|?/i.test(t)) return false;
+  if (/^(미리보기|다운받기|펼치기|접기|닫기|열기)$/.test(t)) return false;
+  if (/(미리보기|다운받기|첨부파일|파일첨부|부산청인스타그램|검색어 검색|특수문자 검색 불가|등록번호입력예시)/.test(t)) return false;
+  if (/\.(pdf|hwpx?|hwp|docx?|xlsx?|zip|png|jpe?g)$/i.test(t)) return false;
+  if (/^(전체|공통|식품|의약품|의료기기|바이오|화장품|한약|위생용품|백신치료제|의약외품)$/.test(t)) return false;
+  if (t.length < 5 || t.length > 260) return false;
+  return true;
+}
+
+function extractSeqFromUrl(rawUrl) {
+  const m = String(rawUrl || '').match(/(?:seq|nttId|articleNo|itm_seq_1)=([0-9]+)/);
+  return m ? m[1] : '';
+}
+
+function normalizeItemUrl(baseUrl, href) {
+  try {
+    return new URL(href || baseUrl, baseUrl).toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
+function makeViewUrlFromSeq(pageUrl, seq) {
+  try {
+    const u = new URL(pageUrl);
+    const params = new URLSearchParams(u.search);
+    params.set('seq', seq);
+    return `${u.origin}${u.pathname.replace(/list\.do$/, 'view.do')}?${params.toString()}`;
+  } catch {
+    return pageUrl;
+  }
+}
+
+function buildAnchorIndex($, pageUrl) {
+  const anchors = [];
+  $('a').each((_, a) => {
+    const rawText = $(a).text();
+    const title = cleanMfdsTitle(rawText);
+    if (!isValidMfdsTitle(title)) return;
+
+    const href = $(a).attr('href') || '';
+    const onclick = $(a).attr('onclick') || '';
+    let isView = /view\.do|seq=|itm_seq|nttId|articleNo/i.test(href);
+    let seq = extractSeqFromUrl(href);
+
+    if (!isView && onclick) {
+      const m = onclick.match(/(?:seq|goView|view)\D+([0-9]{3,})/i);
+      if (m) {
+        seq = m[1];
+        isView = true;
+      }
+    }
+
+    if (!isView) return;
+    const link = seq && (!href || /^javascript:/i.test(href)) ? makeViewUrlFromSeq(pageUrl, seq) : normalizeItemUrl(pageUrl, href);
+    anchors.push({ title, link, seq });
+  });
+
+  const exact = new Map();
+  const normalized = new Map();
+  for (const a of anchors.sort((x, y) => y.title.length - x.title.length)) {
+    if (!exact.has(a.title)) exact.set(a.title, a.link);
+    const key = a.title.replace(/\s+/g, '').toLowerCase();
+    if (!normalized.has(key)) normalized.set(key, a.link);
+  }
+  return { anchors, exact, normalized };
+}
+
+function findLinkForTitle(title, anchorIndex, pageUrl) {
+  const t = cleanMfdsTitle(title);
+  if (anchorIndex.exact.has(t)) return anchorIndex.exact.get(t);
+  const key = t.replace(/\s+/g, '').toLowerCase();
+  if (anchorIndex.normalized.has(key)) return anchorIndex.normalized.get(key);
+
+  for (const a of anchorIndex.anchors) {
+    const ak = a.title.replace(/\s+/g, '').toLowerCase();
+    if (key && (ak.includes(key) || key.includes(ak))) return a.link;
+  }
+  return pageUrl;
+}
+
+function pushRow(rows, seen, row, parser) {
+  const seq = extractSeqFromUrl(row.url);
+  const key = seq || `${row.board_id}|${row.item_date}|${cleanMfdsTitle(row.title)}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  rows.push({ ...row, title: cleanMfdsTitle(row.title), _parser: parser });
+  return true;
+}
+
+function parseMfdsRowsByAnchorBlock($, pageUrl, startDate, endDate, boardId, category) {
+  const rows = [];
+  const seen = new Set();
+  const pageDates = [];
+
+  $('a').each((_, a) => {
+    const title = cleanMfdsTitle($(a).text());
+    if (!isValidMfdsTitle(title)) return;
+    const href = $(a).attr('href') || '';
+    const onclick = $(a).attr('onclick') || '';
+    const looksView = /view\.do|seq=|itm_seq|nttId|articleNo/i.test(href) || /(?:seq|goView|view)\D+[0-9]{3,}/i.test(onclick);
+    if (!looksView) return;
+
+    let block = $(a).closest('li, tr, div, dl, article, section');
+    let txt = norm(block.text());
+    let d = parseDateAny(txt);
+
+    // 실제 목록 구조에서 날짜가 가까운 상위 block에 있을 수 있어 몇 단계 위로 올려본다.
+    let parent = block.parent();
+    for (let depth = 0; !d && depth < 4 && parent?.length; depth += 1) {
+      const pt = norm(parent.text());
+      const dates = [...pt.matchAll(/20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2}/g)].map(x => parseDateAny(x[0])).filter(Boolean);
+      // 너무 큰 본문 전체는 피하고, 제목 포함 + 날짜 포함일 때만 사용
+      if (pt.includes(title) && dates.length && pt.length < 6000) d = dates[0];
+      parent = parent.parent();
+    }
+
+    if (!d) return;
+    pageDates.push(d);
+    if (compareDate(d, startDate) < 0 || compareDate(d, endDate) > 0) return;
+
+    let seq = extractSeqFromUrl(href);
+    if (!seq && onclick) {
+      const m = onclick.match(/(?:seq|goView|view)\D+([0-9]{3,})/i);
+      if (m) seq = m[1];
+    }
+    const link = seq && (!href || /^javascript:/i.test(href)) ? makeViewUrlFromSeq(pageUrl, seq) : normalizeItemUrl(pageUrl, href || pageUrl);
+    pushRow(rows, seen, { site: '식약처', category, board_id: boardId, item_date: d, title, url: link }, 'anchor');
+  });
+
+  return { rows, pageDates };
+}
+
+function parseMfdsRowsByDateBack($, pageUrl, startDate, endDate, boardId, category) {
+  const rows = [];
+  const seen = new Set();
+  const pageDates = [];
+  const anchorIndex = buildAnchorIndex($, pageUrl);
+  const lines = $('body').text().split(/\r?\n/).map(x => norm(x)).filter(Boolean);
+
+  function isNoiseLine(line) {
+    const t = cleanMfdsTitle(line);
+    if (!t) return true;
+    if (isPureDateLine(t)) return true;
+    if (/^\d{1,7}$/.test(t)) return true;
+    if (/^조회수\s*\|?\s*\d+/i.test(t)) return true;
+    if (/^담당부서\s*\|?/i.test(t)) return true;
+    if (/^(새로운게시물|미리보기|다운받기|펼치기|접기|닫기|열기)$/.test(t)) return true;
+    if (/(미리보기|다운받기|등록번호입력예시|특수문자 검색 불가|검색어 검색)/.test(t)) return true;
+    if (/\.(pdf|hwpx?|hwp|docx?|xlsx?|zip|png|jpe?g)$/i.test(t)) return true;
+    if (/^(전체|공통|식품|의약품|의료기기|바이오|화장품|한약|위생용품|백신치료제|의약외품)$/.test(t)) return true;
+    return false;
+  }
+
+  let startIdx = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/전체\s*[0-9,]+\s*건/.test(lines[i])) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+
+  function isEndLine(line) {
+    return /^(첫 페이지|이전 페이지|다음 페이지|마지막 페이지|개인정보처리방침|저작권정책|TOP)$/.test(line) || /Copyright|종합상담센터/.test(line);
+  }
+
+  for (let i = startIdx; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isEndLine(line)) break;
+    if (!isPureDateLine(line)) continue;
+
+    const d = parseDateAny(line);
+    if (!d) continue;
+    pageDates.push(d);
+    if (compareDate(d, startDate) < 0 || compareDate(d, endDate) > 0) continue;
+
+    const scanStart = Math.max(startIdx, i - 45);
+    let title = '';
+
+    // view anchor의 제목을 우선 매칭한다.
+    for (let j = i - 1; j >= scanStart; j -= 1) {
+      const cand = cleanMfdsTitle(lines[j]);
+      if (isNoiseLine(cand)) continue;
+      if (anchorIndex.exact.has(cand) && isValidMfdsTitle(cand)) {
+        title = cand;
+        break;
+      }
+    }
+
+    if (!title) {
+      for (let j = i - 1; j >= scanStart; j -= 1) {
+        const cand = cleanMfdsTitle(lines[j]);
+        if (isNoiseLine(cand)) continue;
+        if (isValidMfdsTitle(cand)) {
+          title = cand;
+          break;
+        }
+      }
+    }
+
+    if (!title) continue;
+    const link = findLinkForTitle(title, anchorIndex, pageUrl);
+    pushRow(rows, seen, { site: '식약처', category, board_id: boardId, item_date: d, title, url: link }, 'dateback');
+  }
+
+  return { rows, pageDates, lineCount: lines.length, totalMarker: lines.some(x => /전체\s*[0-9,]+\s*건/.test(x)) };
+}
+
 async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
   const rows = [];
   const pageDates = [];
   const boardId = src.board_id;
   const category = boardLabel(boardId);
+  const diagnostics = {
+    board_id: boardId,
+    category,
+    url: pageUrl,
+    htmlLength: 0,
+    lineCount: 0,
+    totalMarker: false,
+    anchorCount: 0,
+    anchorRows: 0,
+    datebackRows: 0,
+    dedupedRows: 0,
+    latestDateOnPage: '',
+    error: null
+  };
 
   try {
     const html = await fetchHtml(pageUrl);
+    diagnostics.htmlLength = html.length;
     const $ = cheerio.load(html);
-    let candidates = $('li').toArray();
-    if (!candidates.length) candidates = $('tr').toArray();
+    diagnostics.anchorCount = $('a').length;
 
-    for (const el of candidates) {
-      const txt = norm($(el).text());
-      const d = parseDateAny(txt);
-      if (!d) continue;
-      pageDates.push(d);
+    const anchorParsed = parseMfdsRowsByAnchorBlock($, pageUrl, startDate, endDate, boardId, category);
+    const dateBackParsed = parseMfdsRowsByDateBack($, pageUrl, startDate, endDate, boardId, category);
 
-      let titleAnchor = null;
-      $(el).find('a').each((_, a) => {
-        if (titleAnchor) return;
-        const aText = norm($(a).text());
-        const href = $(a).attr('href') || '';
-        if (isBadTitle(aText)) return;
-        if (['다운받기', '미리보기', '열기', '펼치기', '접기'].includes(aText)) return;
-        if (href.includes('list.do') && ['list', '목록'].includes(aText.toLowerCase())) return;
-        titleAnchor = a;
-      });
+    pageDates.push(...anchorParsed.pageDates, ...dateBackParsed.pageDates);
+    diagnostics.lineCount = dateBackParsed.lineCount || 0;
+    diagnostics.totalMarker = Boolean(dateBackParsed.totalMarker);
+    diagnostics.anchorRows = anchorParsed.rows.length;
+    diagnostics.datebackRows = dateBackParsed.rows.length;
 
-      if (!titleAnchor) continue;
-      const title = norm($(titleAnchor).text());
-      const href = $(titleAnchor).attr('href') || pageUrl;
-      const link = new URL(href, pageUrl).toString();
-
-      if (compareDate(d, startDate) < 0 || compareDate(d, endDate) > 0) continue;
-      rows.push({ site: '식약처', category, board_id: boardId, item_date: d, title, url: link });
+    const seen = new Set();
+    for (const r of [...anchorParsed.rows, ...dateBackParsed.rows]) {
+      pushRow(rows, seen, r, r._parser || 'deduped');
     }
 
-    return { rows, pageDates, error: null };
+    diagnostics.dedupedRows = rows.length;
+    diagnostics.latestDateOnPage = pageDates.length ? [...pageDates].sort().at(-1) : '';
+    console.log(`[mfds-parse] ${boardId} ${category} html=${diagnostics.htmlLength} lines=${diagnostics.lineCount} total=${diagnostics.totalMarker ? 'Y' : 'N'} anchors=${diagnostics.anchorRows} dateback=${diagnostics.datebackRows} deduped=${diagnostics.dedupedRows} latest=${diagnostics.latestDateOnPage || '-'}`);
+
+    return { rows: rows.map(({ _parser, ...r }) => r), pageDates, error: null, diagnostics };
   } catch (err) {
-    return { rows, pageDates, error: `${boardId} ${pageUrl}: ${err?.message || err}` };
+    diagnostics.error = err?.message || String(err);
+    console.warn(`[mfds-parse-error] ${boardId} ${pageUrl}: ${diagnostics.error}`);
+    return { rows, pageDates, error: `${boardId} ${pageUrl}: ${diagnostics.error}`, diagnostics };
   }
 }
 
 async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
   const allRows = [];
   const errors = [];
+  const pageDiagnostics = [];
   let previousPageSignature = null;
   let emptyCount = 0;
 
   for (let pageNo = 1; pageNo <= Number(maxPages); pageNo += 1) {
     const pageUrl = mfdsPagedUrl(src.url, pageNo);
-    const { rows, pageDates, error } = await parseMfdsBoardPage(src, pageUrl, startDate, endDate);
+    const { rows, pageDates, error, diagnostics } = await parseMfdsBoardPage(src, pageUrl, startDate, endDate);
+    if (diagnostics) pageDiagnostics.push({ pageNo, ...diagnostics });
     if (error) errors.push(error);
 
     const signature = rows.slice(0, 10).map(r => `${r.item_date}:${r.title}`).join('|');
@@ -372,8 +606,9 @@ async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
     }
 
     if (pageDates.length) {
-      const maxDate = pageDates.sort().at(-1);
-      const minDate = pageDates.sort()[0];
+      const sortedDates = [...pageDates].sort();
+      const maxDate = sortedDates.at(-1);
+      const minDate = sortedDates[0];
       if (compareDate(maxDate, startDate) < 0) break;
       if (compareDate(minDate, startDate) < 0 && pageNo > 1) break;
     }
@@ -385,14 +620,17 @@ async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
   const seen = new Set();
   const deduped = [];
   for (const r of allRows) {
-    const key = itemHash(r.site, r.category, r.item_date, r.title, r.url);
+    const seq = extractSeqFromUrl(r.url);
+    const key = seq || itemHash(r.site, r.category, r.item_date, r.title, r.url);
     if (!seen.has(key)) {
       seen.add(key);
       deduped.push(r);
     }
   }
 
-  return { rows: deduped, errors };
+  const latestDate = deduped.length ? deduped.map(r => r.item_date).sort().at(-1) : '';
+  const latestPageDate = pageDiagnostics.map(x => x.latestDateOnPage).filter(Boolean).sort().at(-1) || '';
+  return { rows: deduped, errors, diagnostics: { pages: pageDiagnostics, latestDate, latestPageDate } };
 }
 
 async function initDb() {
@@ -656,22 +894,46 @@ function summarize(items) {
 async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
   const days = Math.max(1, Math.floor((new Date(`${endDate}T00:00:00Z`) - new Date(`${startDate}T00:00:00Z`)) / 86400000) + 1);
   const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 10 : days <= 180 ? 25 : 60;
-  const rows = [];
   const errors = [];
   const boardResults = [];
+  let inserted = 0;
+  let skipped = 0;
+  let checked = 0;
 
   for (const src of MFDS_SOURCES) {
     const result = await parseMfdsBoard(src, startDate, endDate, maxPages);
-    rows.push(...result.rows);
+    const insertResult = await dbInsertItems(result.rows);
+
+    inserted += insertResult.inserted;
+    skipped += insertResult.skipped;
+    checked += result.rows.length;
     errors.push(...result.errors);
-    boardResults.push({ board_id: src.board_id, category: boardLabel(src.board_id), count: result.rows.length, errors: result.errors.slice(0, 2) });
+
+    const firstPageDiag = result.diagnostics?.pages?.[0] || {};
+    boardResults.push({
+      board_id: src.board_id,
+      category: boardLabel(src.board_id),
+      checked: result.rows.length,
+      inserted: insertResult.inserted,
+      skipped: insertResult.skipped,
+      latestDate: result.diagnostics?.latestDate || '',
+      latestPageDate: result.diagnostics?.latestPageDate || '',
+      htmlLength: firstPageDiag.htmlLength || 0,
+      lineCount: firstPageDiag.lineCount || 0,
+      totalMarker: firstPageDiag.totalMarker ? 'Y' : 'N',
+      anchorRows: firstPageDiag.anchorRows || 0,
+      datebackRows: firstPageDiag.datebackRows || 0,
+      dedupedRows: firstPageDiag.dedupedRows || 0,
+      error: result.errors?.[0] || firstPageDiag.error || ''
+    });
+
     await delay(150);
   }
 
-  const { inserted, skipped } = await dbInsertItems(rows);
   await setMeta('last_collect_range', `${startDate}~${endDate}`);
   await setMeta('last_collect_mode', collectMode);
-  return { inserted, skipped, checked: rows.length, boardResults, errors: errors.slice(0, 20) };
+  await setMeta('last_collect_checked', String(checked));
+  return { inserted, skipped, checked, boardResults, errors: errors.slice(0, 20), apiVersion: API_VERSION };
 }
 
 function parseQueryRange(req) {
@@ -724,7 +986,7 @@ app.get('/api/stats', async (req, res, next) => {
     const all = await dbLoadAll();
     const filtered = sortItemsByDateDesc(filterItems(all, { ...range, q: req.query.q || '', category: req.query.category || '전체' }));
     const recent = filtered.slice(0, 8);
-    res.json({ range, stats: summarize(all), filteredStats: summarize(filtered), recent, lastCollected: await dbLastCollected(), totalStored: all.length });
+    res.json({ apiVersion: API_VERSION, range, stats: summarize(all), filteredStats: summarize(filtered), recent, lastCollected: await dbLastCollected(), totalStored: all.length });
   } catch (err) {
     next(err);
   }
@@ -741,7 +1003,7 @@ app.get('/api/items', async (req, res, next) => {
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const currentPage = Math.min(page, totalPages);
     const items = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-    res.json({ range, total, totalPages, page: currentPage, pageSize, items, lastCollected: await dbLastCollected() });
+    res.json({ apiVersion: API_VERSION, range, total, totalPages, page: currentPage, pageSize, items, lastCollected: await dbLastCollected() });
   } catch (err) {
     next(err);
   }
