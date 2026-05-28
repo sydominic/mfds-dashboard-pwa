@@ -31,3 +31,10 @@ Streamlit v7 `app.py` 기능을 기준으로 React + Node/Express + Render Web S
 - `server/src/index.js`의 수집 로직을 `anchor` + `dateback` 방식으로 변경했습니다.
 - React 화면에 게시판별 수집 결과 / 파서 진단표를 추가했습니다.
 - API version: `v20-node-mfds-parser-diagnostics`
+
+
+## V21 변경사항
+- Render에서 식약처 `fetch failed`가 발생하는 문제를 진단하기 위해 Node fetch fallback을 추가했습니다.
+- 요청 순서: node-fetch → node:https IPv4 → curl IPv4
+- 게시판별 진단표에 `FETCH` 및 `오류상세` 컬럼을 추가했습니다.
+- Render Logs에서 `[mfds-fetch]`, `[mfds-fetch-error]`를 확인할 수 있습니다.

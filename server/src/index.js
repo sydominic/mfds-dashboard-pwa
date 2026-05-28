@@ -1,6 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import https from 'node:https';
+import dns from 'node:dns';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
@@ -48,7 +51,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v20-node-mfds-parser-diagnostics';
+const API_VERSION = 'v21-node-fetch-fallback-diagnostics';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
@@ -279,30 +282,189 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchHtml(url, timeoutMs = 12000) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MFDSDashboard/NodeRender',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+const FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36 MFDSDashboard/NodeRender',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Connection': 'close'
+};
+
+const LAST_FETCH_INFO = new Map();
+
+function compactFetchError(err) {
+  const parts = [];
+  const add = (label, value) => {
+    if (value !== undefined && value !== null && String(value) !== '') parts.push(`${label}=${String(value)}`);
+  };
+
+  add('name', err?.name);
+  add('message', err?.message || err);
+  add('code', err?.code);
+  add('errno', err?.errno);
+  add('syscall', err?.syscall);
+  add('hostname', err?.hostname);
+  add('host', err?.host);
+  add('address', err?.address);
+  add('port', err?.port);
+
+  const cause = err?.cause;
+  if (cause) {
+    add('cause.name', cause?.name);
+    add('cause.message', cause?.message);
+    add('cause.code', cause?.code);
+    add('cause.errno', cause?.errno);
+    add('cause.syscall', cause?.syscall);
+    add('cause.hostname', cause?.hostname);
+    add('cause.address', cause?.address);
+    add('cause.port', cause?.port);
+  }
+
+  return parts.join(', ').slice(0, 900);
+}
+
+async function fetchHtmlWithNodeFetch(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`timeout ${timeoutMs}ms`)), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: FETCH_HEADERS
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+    const buf = await res.arrayBuffer();
+    return Buffer.from(buf).toString('utf-8');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function httpsRequestOnce(url, timeoutMs = 12000, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const target = new URL(url);
+
+    const req = https.request(
+      target,
+      {
+        method: 'GET',
+        headers: FETCH_HEADERS,
+        timeout: timeoutMs,
+        family: 4,
+        lookup: (hostname, options, callback) => {
+          dns.lookup(hostname, { ...options, family: 4 }, callback);
         }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = await res.arrayBuffer();
-      return Buffer.from(buf).toString('utf-8');
+      },
+      (res) => {
+        const status = Number(res.statusCode || 0);
+        const location = res.headers.location;
+
+        if ([301, 302, 303, 307, 308].includes(status) && location && redirectCount < 5) {
+          res.resume();
+          const nextUrl = new URL(location, url).toString();
+          httpsRequestOnce(nextUrl, timeoutMs, redirectCount + 1).then(resolve).catch(reject);
+          return;
+        }
+
+        if (status < 200 || status >= 300) {
+          res.resume();
+          reject(new Error(`HTTPS HTTP ${status}`));
+          return;
+        }
+
+        const chunks = [];
+        res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      }
+    );
+
+    req.on('timeout', () => {
+      if (!settled) {
+        settled = true;
+        req.destroy(new Error(`https timeout ${timeoutMs}ms`));
+      }
+    });
+    req.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    req.end();
+  });
+}
+
+function fetchHtmlWithCurl(url, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-L',
+      '--ipv4',
+      '--compressed',
+      '--silent',
+      '--show-error',
+      '--max-time',
+      String(Math.max(3, Math.ceil(timeoutMs / 1000))),
+      '-A',
+      FETCH_HEADERS['User-Agent'],
+      '-H',
+      `Accept-Language: ${FETCH_HEADERS['Accept-Language']}`,
+      '-H',
+      'Cache-Control: no-cache',
+      url
+    ];
+
+    execFile('curl', args, { timeout: timeoutMs + 5000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = [err.message, stderr].filter(Boolean).join(' / ');
+        const e = new Error(`curl failed: ${detail}`);
+        e.code = err.code;
+        reject(e);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+async function fetchHtml(url, timeoutMs = 12000) {
+  const methods = [
+    ['node-fetch', fetchHtmlWithNodeFetch],
+    ['https-ipv4', httpsRequestOnce],
+    ['curl-ipv4', fetchHtmlWithCurl]
+  ];
+
+  const errors = [];
+
+  for (const [method, fn] of methods) {
+    try {
+      const html = await fn(url, timeoutMs);
+      const info = {
+        ok: true,
+        method,
+        htmlLength: html ? html.length : 0,
+        error: ''
+      };
+      LAST_FETCH_INFO.set(url, info);
+      console.log(`[mfds-fetch] OK ${method} ${url} html=${info.htmlLength}`);
+      return html;
     } catch (err) {
-      lastError = err;
-      await delay(attempt * 500);
-    } finally {
-      clearTimeout(timer);
+      const detail = `${method}: ${compactFetchError(err)}`;
+      errors.push(detail);
+      console.warn(`[mfds-fetch-error] ${url} ${detail}`);
+      await delay(300);
     }
   }
-  throw lastError;
+
+  const message = `all fetch methods failed: ${errors.join(' | ')}`;
+  LAST_FETCH_INFO.set(url, {
+    ok: false,
+    method: 'none',
+    htmlLength: 0,
+    error: message.slice(0, 1200)
+  });
+  throw new Error(message);
 }
 
 
@@ -546,11 +708,16 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
     datebackRows: 0,
     dedupedRows: 0,
     latestDateOnPage: '',
-    error: null
+    error: null,
+    fetchMethod: '',
+    fetchErrorDetail: ''
   };
 
   try {
     const html = await fetchHtml(pageUrl);
+    const fetchInfo = LAST_FETCH_INFO.get(pageUrl) || {};
+    diagnostics.fetchMethod = fetchInfo.method || '';
+    diagnostics.fetchErrorDetail = fetchInfo.error || '';
     diagnostics.htmlLength = html.length;
     const $ = cheerio.load(html);
     diagnostics.anchorCount = $('a').length;
@@ -571,10 +738,13 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
 
     diagnostics.dedupedRows = rows.length;
     diagnostics.latestDateOnPage = pageDates.length ? [...pageDates].sort().at(-1) : '';
-    console.log(`[mfds-parse] ${boardId} ${category} html=${diagnostics.htmlLength} lines=${diagnostics.lineCount} total=${diagnostics.totalMarker ? 'Y' : 'N'} anchors=${diagnostics.anchorRows} dateback=${diagnostics.datebackRows} deduped=${diagnostics.dedupedRows} latest=${diagnostics.latestDateOnPage || '-'}`);
+    console.log(`[mfds-parse] ${boardId} ${category} fetch=${diagnostics.fetchMethod || '-'} html=${diagnostics.htmlLength} lines=${diagnostics.lineCount} total=${diagnostics.totalMarker ? 'Y' : 'N'} anchors=${diagnostics.anchorRows} dateback=${diagnostics.datebackRows} deduped=${diagnostics.dedupedRows} latest=${diagnostics.latestDateOnPage || '-'}`);
 
     return { rows: rows.map(({ _parser, ...r }) => r), pageDates, error: null, diagnostics };
   } catch (err) {
+    const fetchInfo = LAST_FETCH_INFO.get(pageUrl) || {};
+    diagnostics.fetchMethod = fetchInfo.method || 'none';
+    diagnostics.fetchErrorDetail = fetchInfo.error || compactFetchError(err);
     diagnostics.error = err?.message || String(err);
     console.warn(`[mfds-parse-error] ${boardId} ${pageUrl}: ${diagnostics.error}`);
     return { rows, pageDates, error: `${boardId} ${pageUrl}: ${diagnostics.error}`, diagnostics };
@@ -918,13 +1088,15 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
       skipped: insertResult.skipped,
       latestDate: result.diagnostics?.latestDate || '',
       latestPageDate: result.diagnostics?.latestPageDate || '',
+      fetchMethod: firstPageDiag.fetchMethod || '',
+      fetchErrorDetail: firstPageDiag.fetchErrorDetail || '',
       htmlLength: firstPageDiag.htmlLength || 0,
       lineCount: firstPageDiag.lineCount || 0,
       totalMarker: firstPageDiag.totalMarker ? 'Y' : 'N',
       anchorRows: firstPageDiag.anchorRows || 0,
       datebackRows: firstPageDiag.datebackRows || 0,
       dedupedRows: firstPageDiag.dedupedRows || 0,
-      error: result.errors?.[0] || firstPageDiag.error || ''
+      error: result.errors?.[0] || firstPageDiag.fetchErrorDetail || firstPageDiag.error || ''
     });
 
     await delay(150);

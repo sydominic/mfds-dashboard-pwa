@@ -344,9 +344,9 @@ function CollectDiagnostics({ report, apiVersion }) {
       <summary>게시판별 수집 결과 / 파서 진단 {apiVersion ? `(${apiVersion})` : ''}</summary>
       {!report?.length ? <p className="empty-text">아직 이 화면에서 수집 결과가 없습니다. 빠른수집 또는 기간수집 후 게시판별 확인/신규/중복 및 HTML 진단이 표시됩니다.</p> :
         <div className="diagnostic-table-wrap"><table className="diagnostic-table"><thead><tr>
-          <th>구분</th><th>ID</th><th>확인</th><th>신규</th><th>중복</th><th>최신게시일</th><th>페이지최신일</th><th>HTML</th><th>라인</th><th>전체건</th><th>ANCHOR</th><th>DATEBACK</th><th>오류</th>
+          <th>구분</th><th>ID</th><th>확인</th><th>신규</th><th>중복</th><th>최신게시일</th><th>페이지최신일</th><th>FETCH</th><th>HTML</th><th>라인</th><th>전체건</th><th>ANCHOR</th><th>DATEBACK</th><th>오류상세</th>
         </tr></thead><tbody>{report.map((r, idx) => <tr key={`${r.board_id || idx}`}>
-          <td>{r.category}</td><td>{r.board_id}</td><td>{numberFmt(r.checked)}</td><td>{numberFmt(r.inserted)}</td><td>{numberFmt(r.skipped)}</td><td>{r.latestDate || '-'}</td><td>{r.latestPageDate || '-'}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker || '-'}</td><td>{numberFmt(r.anchorRows)}</td><td>{numberFmt(r.datebackRows)}</td><td className="diag-error">{r.error || ''}</td>
+          <td>{r.category}</td><td>{r.board_id}</td><td>{numberFmt(r.checked)}</td><td>{numberFmt(r.inserted)}</td><td>{numberFmt(r.skipped)}</td><td>{r.latestDate || '-'}</td><td>{r.latestPageDate || '-'}</td><td>{r.fetchMethod || '-'}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker || '-'}</td><td>{numberFmt(r.anchorRows)}</td><td>{numberFmt(r.datebackRows)}</td><td className="diag-error">{r.fetchErrorDetail || r.error || ''}</td>
         </tr>)}</tbody></table></div>}
     </details>
   </section>;
