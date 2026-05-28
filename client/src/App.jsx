@@ -60,21 +60,21 @@ async function apiGet(path) {
   return json;
 }
 
-async function apiPost(path, body) {
-  const res = await fetch(path, {
+async function apiPost(url, body) {
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {})
   });
   const text = await res.text();
-  let json;
+  let data;
   try {
-    json = JSON.parse(text);
+    data = JSON.parse(text);
   } catch {
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new Error(`서버가 JSON이 아닌 응답을 반환했습니다. ${text.slice(0, 300)}`);
   }
-  if (!res.ok || json.ok === false) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
+  if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
 }
 
 function periodDatesForClient(period, startDate, endDate) {
@@ -131,6 +131,7 @@ function App() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [collectReport, setCollectReport] = useState([]);
+  const [fetchDiag, setFetchDiag] = useState(null);
   const [apiVersion, setApiVersion] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const dataRequestRef = useRef(0);
@@ -204,6 +205,35 @@ function App() {
     }
   }
 
+
+  async function runFetchDiagnostics() {
+    setCollecting(true);
+    setError('');
+    setMessage('');
+    try {
+      const res = await fetch('/api/fetch-diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board_id: 'm_99' })
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`서버가 JSON이 아닌 응답을 반환했습니다. ${text.slice(0, 300)}`);
+      }
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setFetchDiag(data);
+      const ok = data.results?.find(x => x.ok);
+      setMessage(ok ? `${data.apiVersion} 연결진단 완료: ${ok.method} 방식으로 HTML 수신 성공` : `${data.apiVersion} 연결진단 완료: 모든 방식 실패`);
+    } catch (err) {
+      setError(`연결진단 실패: ${err.message || err}`);
+    } finally {
+      setCollecting(false);
+    }
+  }
+
   const headerStats = stats?.stats || { today: 0, recent7: 0, recent14: 0, total: 0 };
   const periodLabel = PERIODS.find(p => p.value === filters.period)?.label || '최근 7일';
   const filterSummary = `${periodLabel} · 전체${filters.q ? ` · ${filters.q}` : ''}`;
@@ -269,6 +299,7 @@ function App() {
       {loading && <div className="notice info">데이터를 조회하는 중입니다.</div>}
       {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. 기간수집은 시간이 걸릴 수 있습니다.</div>}
       <CollectDiagnostics report={collectReport} apiVersion={apiVersion} />
+      <FetchDiagnostics data={fetchDiag} />
 
       <section className="stat-grid desktop-only">
         <Metric title="오늘 신규" value={headerStats.today} sub="오늘 게시 기준" icon={<FileText size={19} />} />
@@ -351,6 +382,21 @@ function CollectDiagnostics({ report, apiVersion }) {
     </details>
   </section>;
 }
+
+
+function FetchDiagnostics({ data }) {
+  if (!data) return null;
+  return <section className="card fetch-diagnostics">
+    <h3>식약처 연결진단 결과</h3>
+    <p className="diag-sub">{data.category}({data.board_id}) / {data.url} / timeout {numberFmt(data.timeoutMs)}ms</p>
+    <div className="diagnostic-table-wrap"><table className="diagnostic-table"><thead><tr>
+      <th>방식</th><th>결과</th><th>소요ms</th><th>HTML</th><th>라인</th><th>전체건</th><th>오류상세</th>
+    </tr></thead><tbody>{data.results?.map((r) => <tr key={r.method}>
+      <td>{r.method}</td><td>{r.ok ? '성공' : '실패'}</td><td>{numberFmt(r.elapsedMs)}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker ? 'Y' : 'N'}</td><td className="diag-error">{r.error || ''}</td>
+    </tr>)}</tbody></table></div>
+  </section>;
+}
+
 
 function Metric({ title, value, sub, icon }) {
   return <div className="metric card"><div className="metric-icon">{icon}</div><div><p>{title}</p><strong>{numberFmt(value)}건</strong><span>{sub}</span></div></div>;

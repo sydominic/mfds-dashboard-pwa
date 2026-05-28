@@ -51,9 +51,12 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v21-node-fetch-fallback-diagnostics';
+const API_VERSION = 'v22-safe-collect-and-fetch-diagnostics';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
+const COLLECT_FETCH_TIMEOUT_MS = Number(process.env.COLLECT_FETCH_TIMEOUT_MS || 4500);
+const DIAGNOSTIC_FETCH_TIMEOUT_MS = Number(process.env.DIAGNOSTIC_FETCH_TIMEOUT_MS || 12000);
+const COLLECT_GLOBAL_TIMEOUT_MS = Number(process.env.COLLECT_GLOBAL_TIMEOUT_MS || 42000);
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
 const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || '').trim();
 const RAW_SUPABASE_KEY = String(process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
@@ -321,7 +324,7 @@ function compactFetchError(err) {
     add('cause.port', cause?.port);
   }
 
-  return parts.join(', ').slice(0, 900);
+  return parts.join(', ').slice(0, 1200);
 }
 
 async function fetchHtmlWithNodeFetch(url, timeoutMs = 12000) {
@@ -376,7 +379,12 @@ function httpsRequestOnce(url, timeoutMs = 12000, redirectCount = 0) {
 
         const chunks = [];
         res.on('data', chunk => chunks.push(Buffer.from(chunk)));
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+        res.on('end', () => {
+          if (!settled) {
+            settled = true;
+            resolve(Buffer.concat(chunks).toString('utf-8'));
+          }
+        });
       }
     );
 
@@ -428,43 +436,83 @@ function fetchHtmlWithCurl(url, timeoutMs = 12000) {
   });
 }
 
-async function fetchHtml(url, timeoutMs = 12000) {
-  const methods = [
-    ['node-fetch', fetchHtmlWithNodeFetch],
-    ['https-ipv4', httpsRequestOnce],
-    ['curl-ipv4', fetchHtmlWithCurl]
-  ];
+async function runFetchMethod(url, method, timeoutMs) {
+  if (method === 'node-fetch') return fetchHtmlWithNodeFetch(url, timeoutMs);
+  if (method === 'https-ipv4') return httpsRequestOnce(url, timeoutMs);
+  if (method === 'curl-ipv4') return fetchHtmlWithCurl(url, timeoutMs);
+  throw new Error(`unknown fetch method: ${method}`);
+}
+
+async function fetchHtml(url, options = {}) {
+  const {
+    timeoutMs = COLLECT_FETCH_TIMEOUT_MS,
+    mode = 'collect',
+    methods = mode === 'diagnostic' ? ['node-fetch', 'https-ipv4', 'curl-ipv4'] : ['node-fetch']
+  } = options;
 
   const errors = [];
 
-  for (const [method, fn] of methods) {
+  for (const method of methods) {
     try {
-      const html = await fn(url, timeoutMs);
+      const html = await runFetchMethod(url, method, timeoutMs);
       const info = {
         ok: true,
         method,
         htmlLength: html ? html.length : 0,
-        error: ''
+        error: '',
+        errors
       };
       LAST_FETCH_INFO.set(url, info);
-      console.log(`[mfds-fetch] OK ${method} ${url} html=${info.htmlLength}`);
+      console.log(`[mfds-fetch] OK mode=${mode} method=${method} ${url} html=${info.htmlLength}`);
       return html;
     } catch (err) {
       const detail = `${method}: ${compactFetchError(err)}`;
       errors.push(detail);
-      console.warn(`[mfds-fetch-error] ${url} ${detail}`);
-      await delay(300);
+      console.warn(`[mfds-fetch-error] mode=${mode} ${url} ${detail}`);
+      if (mode !== 'diagnostic') break;
+      await delay(250);
     }
   }
 
-  const message = `all fetch methods failed: ${errors.join(' | ')}`;
+  const message = `fetch failed: ${errors.join(' | ')}`;
   LAST_FETCH_INFO.set(url, {
     ok: false,
     method: 'none',
     htmlLength: 0,
-    error: message.slice(0, 1200)
+    error: message.slice(0, 1200),
+    errors
   });
   throw new Error(message);
+}
+
+async function runFetchDiagnostics(url, timeoutMs = DIAGNOSTIC_FETCH_TIMEOUT_MS) {
+  const results = [];
+  for (const method of ['node-fetch', 'https-ipv4', 'curl-ipv4']) {
+    const started = Date.now();
+    try {
+      const html = await runFetchMethod(url, method, timeoutMs);
+      results.push({
+        method,
+        ok: true,
+        elapsedMs: Date.now() - started,
+        htmlLength: html ? html.length : 0,
+        lineCount: html ? html.split(/\r?\n/).length : 0,
+        totalMarker: /전체\s*[0-9,]+\s*건/.test(html || ''),
+        error: ''
+      });
+    } catch (err) {
+      results.push({
+        method,
+        ok: false,
+        elapsedMs: Date.now() - started,
+        htmlLength: 0,
+        lineCount: 0,
+        totalMarker: false,
+        error: compactFetchError(err)
+      });
+    }
+  }
+  return results;
 }
 
 
@@ -714,7 +762,7 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
   };
 
   try {
-    const html = await fetchHtml(pageUrl);
+    const html = await fetchHtml(pageUrl, { mode: 'collect', timeoutMs: COLLECT_FETCH_TIMEOUT_MS, methods: ['node-fetch'] });
     const fetchInfo = LAST_FETCH_INFO.get(pageUrl) || {};
     diagnostics.fetchMethod = fetchInfo.method || '';
     diagnostics.fetchErrorDetail = fetchInfo.error || '';
@@ -1062,51 +1110,112 @@ function summarize(items) {
 }
 
 async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
+  const startedAt = Date.now();
   const days = Math.max(1, Math.floor((new Date(`${endDate}T00:00:00Z`) - new Date(`${startDate}T00:00:00Z`)) / 86400000) + 1);
-  const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 10 : days <= 180 ? 25 : 60;
+
+  // v22: Render 502 방지를 위해 /api/collect는 짧게 끝내는 것을 우선한다.
+  const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 5 : days <= 180 ? 12 : 20;
+
   const errors = [];
   const boardResults = [];
   let inserted = 0;
   let skipped = 0;
   let checked = 0;
+  let stoppedByGlobalTimeout = false;
 
   for (const src of MFDS_SOURCES) {
-    const result = await parseMfdsBoard(src, startDate, endDate, maxPages);
-    const insertResult = await dbInsertItems(result.rows);
+    if (Date.now() - startedAt > COLLECT_GLOBAL_TIMEOUT_MS) {
+      stoppedByGlobalTimeout = true;
+      boardResults.push({
+        board_id: src.board_id,
+        category: boardLabel(src.board_id),
+        checked: 0,
+        inserted: 0,
+        skipped: 0,
+        latestDate: '',
+        latestPageDate: '',
+        fetchMethod: 'skipped',
+        fetchErrorDetail: `global timeout ${COLLECT_GLOBAL_TIMEOUT_MS}ms reached before this board`,
+        htmlLength: 0,
+        lineCount: 0,
+        totalMarker: 'N',
+        anchorRows: 0,
+        datebackRows: 0,
+        dedupedRows: 0,
+        error: `global timeout ${COLLECT_GLOBAL_TIMEOUT_MS}ms reached`
+      });
+      continue;
+    }
 
-    inserted += insertResult.inserted;
-    skipped += insertResult.skipped;
-    checked += result.rows.length;
-    errors.push(...result.errors);
+    try {
+      const result = await parseMfdsBoard(src, startDate, endDate, maxPages);
+      const insertResult = await dbInsertItems(result.rows);
 
-    const firstPageDiag = result.diagnostics?.pages?.[0] || {};
-    boardResults.push({
-      board_id: src.board_id,
-      category: boardLabel(src.board_id),
-      checked: result.rows.length,
-      inserted: insertResult.inserted,
-      skipped: insertResult.skipped,
-      latestDate: result.diagnostics?.latestDate || '',
-      latestPageDate: result.diagnostics?.latestPageDate || '',
-      fetchMethod: firstPageDiag.fetchMethod || '',
-      fetchErrorDetail: firstPageDiag.fetchErrorDetail || '',
-      htmlLength: firstPageDiag.htmlLength || 0,
-      lineCount: firstPageDiag.lineCount || 0,
-      totalMarker: firstPageDiag.totalMarker ? 'Y' : 'N',
-      anchorRows: firstPageDiag.anchorRows || 0,
-      datebackRows: firstPageDiag.datebackRows || 0,
-      dedupedRows: firstPageDiag.dedupedRows || 0,
-      error: result.errors?.[0] || firstPageDiag.fetchErrorDetail || firstPageDiag.error || ''
-    });
+      inserted += insertResult.inserted;
+      skipped += insertResult.skipped;
+      checked += result.rows.length;
+      errors.push(...result.errors);
 
-    await delay(150);
+      const firstPageDiag = result.diagnostics?.pages?.[0] || {};
+      boardResults.push({
+        board_id: src.board_id,
+        category: boardLabel(src.board_id),
+        checked: result.rows.length,
+        inserted: insertResult.inserted,
+        skipped: insertResult.skipped,
+        latestDate: result.diagnostics?.latestDate || '',
+        latestPageDate: result.diagnostics?.latestPageDate || '',
+        fetchMethod: firstPageDiag.fetchMethod || '',
+        fetchErrorDetail: firstPageDiag.fetchErrorDetail || '',
+        htmlLength: firstPageDiag.htmlLength || 0,
+        lineCount: firstPageDiag.lineCount || 0,
+        totalMarker: firstPageDiag.totalMarker ? 'Y' : 'N',
+        anchorRows: firstPageDiag.anchorRows || 0,
+        datebackRows: firstPageDiag.datebackRows || 0,
+        dedupedRows: firstPageDiag.dedupedRows || 0,
+        error: result.errors?.[0] || firstPageDiag.fetchErrorDetail || firstPageDiag.error || ''
+      });
+    } catch (err) {
+      const errText = err?.message || String(err);
+      errors.push(`${src.board_id}: ${errText}`);
+      boardResults.push({
+        board_id: src.board_id,
+        category: boardLabel(src.board_id),
+        checked: 0,
+        inserted: 0,
+        skipped: 0,
+        latestDate: '',
+        latestPageDate: '',
+        fetchMethod: 'exception',
+        fetchErrorDetail: errText.slice(0, 1200),
+        htmlLength: 0,
+        lineCount: 0,
+        totalMarker: 'N',
+        anchorRows: 0,
+        datebackRows: 0,
+        dedupedRows: 0,
+        error: errText.slice(0, 1200)
+      });
+    }
+
+    await delay(80);
   }
 
   await setMeta('last_collect_range', `${startDate}~${endDate}`);
   await setMeta('last_collect_mode', collectMode);
   await setMeta('last_collect_checked', String(checked));
-  return { inserted, skipped, checked, boardResults, errors: errors.slice(0, 20), apiVersion: API_VERSION };
+  return {
+    inserted,
+    skipped,
+    checked,
+    boardResults,
+    errors: errors.slice(0, 20),
+    stoppedByGlobalTimeout,
+    elapsedMs: Date.now() - startedAt,
+    apiVersion: API_VERSION
+  };
 }
+
 
 function parseQueryRange(req) {
   const { period = 'recent7', startDate, endDate } = req.query || {};
@@ -1138,8 +1247,32 @@ app.get('/api/health', (_req, res) => {
     port: PORT,
     host: HOST,
     today: getTodayKst(),
-    sources: MFDS_SOURCES.length
+    sources: MFDS_SOURCES.length,
+    collectFetchTimeoutMs: COLLECT_FETCH_TIMEOUT_MS,
+    collectGlobalTimeoutMs: COLLECT_GLOBAL_TIMEOUT_MS,
+    diagnosticFetchTimeoutMs: DIAGNOSTIC_FETCH_TIMEOUT_MS
   });
+});
+
+
+app.post('/api/fetch-diagnostics', async (req, res, next) => {
+  try {
+    const boardId = String(req.body?.board_id || req.query?.board_id || 'm_99');
+    const src = MFDS_SOURCES.find(x => x.board_id === boardId) || MFDS_SOURCES.find(x => x.board_id === 'm_99') || MFDS_SOURCES[0];
+    const pageUrl = mfdsPagedUrl(src.url, 1);
+    const results = await runFetchDiagnostics(pageUrl, DIAGNOSTIC_FETCH_TIMEOUT_MS);
+    res.json({
+      ok: true,
+      apiVersion: API_VERSION,
+      board_id: src.board_id,
+      category: boardLabel(src.board_id),
+      url: pageUrl,
+      timeoutMs: DIAGNOSTIC_FETCH_TIMEOUT_MS,
+      results
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.get('/api/options', async (_req, res, next) => {

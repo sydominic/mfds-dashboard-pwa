@@ -409,3 +409,26 @@ tr:nth-child(even) td { background: #fbfdff; }
   min-width: 180px;
   max-width: 360px;
 }
+
+
+.btn.slate {
+  background: linear-gradient(135deg, #4b5563, #111827);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.18);
+}
+
+.fetch-diagnostics {
+  margin-top: 14px;
+}
+
+.fetch-diagnostics h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.diag-sub {
+  margin: 0 0 10px;
+  color: #53617a;
+  font-size: 13px;
+  word-break: break-all;
+}

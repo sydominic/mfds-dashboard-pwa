@@ -38,3 +38,10 @@ Streamlit v7 `app.py` 기능을 기준으로 React + Node/Express + Render Web S
 - 요청 순서: node-fetch → node:https IPv4 → curl IPv4
 - 게시판별 진단표에 `FETCH` 및 `오류상세` 컬럼을 추가했습니다.
 - Render Logs에서 `[mfds-fetch]`, `[mfds-fetch-error]`를 확인할 수 있습니다.
+
+
+## V22 변경사항
+- Render 502 방지를 위해 수집과 연결진단을 분리했습니다.
+- `/api/collect`는 짧은 timeout으로 JSON 응답을 반환하도록 변경했습니다.
+- `/api/fetch-diagnostics` 엔드포인트와 React `연결진단` 버튼을 추가했습니다.
+- 연결진단은 m_99 보도자료 1개 게시판만 대상으로 node-fetch/https-ipv4/curl-ipv4를 테스트합니다.
