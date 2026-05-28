@@ -45,3 +45,11 @@ Streamlit v7 `app.py` 기능을 기준으로 React + Node/Express + Render Web S
 - `/api/collect`는 짧은 timeout으로 JSON 응답을 반환하도록 변경했습니다.
 - `/api/fetch-diagnostics` 엔드포인트와 React `연결진단` 버튼을 추가했습니다.
 - 연결진단은 m_99 보도자료 1개 게시판만 대상으로 node-fetch/https-ipv4/curl-ipv4를 테스트합니다.
+
+
+## V23 변경사항
+- 수집 전 m_99 보도자료 1페이지로 fetch 방식 사전진단을 수행합니다.
+- `node-fetch → https-ipv4 → curl-ipv4` 순서로 실제 HTML 수신 가능 방식을 자동 선택합니다.
+- 선택된 방식으로 전체 게시판 수집을 수행합니다.
+- 게시판별 진단표 첫 행에 `연결사전진단` 결과를 표시합니다.
+- 수집 완료 메시지에 선택된 FETCH 방식을 표시합니다.

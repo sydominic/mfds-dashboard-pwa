@@ -195,7 +195,7 @@ function App() {
       const data = await apiPost('/api/collect', { mode, ...range });
       setCollectReport(data.boardResults || []);
       setApiVersion(data.apiVersion || apiVersion);
-      setMessage(`${data.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건`);
+      setMessage(`${data.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건${data.selectedFetchMethod ? ` · FETCH ${data.selectedFetchMethod}` : ''}`);
       await loadOptions();
       await loadData(1, 1, filters);
     } catch (err) {

@@ -51,12 +51,14 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v22-safe-collect-and-fetch-diagnostics';
+const API_VERSION = 'v23-auto-fetch-method-collect';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
-const COLLECT_FETCH_TIMEOUT_MS = Number(process.env.COLLECT_FETCH_TIMEOUT_MS || 4500);
+const COLLECT_FETCH_TIMEOUT_MS = Number(process.env.COLLECT_FETCH_TIMEOUT_MS || 12000);
 const DIAGNOSTIC_FETCH_TIMEOUT_MS = Number(process.env.DIAGNOSTIC_FETCH_TIMEOUT_MS || 12000);
-const COLLECT_GLOBAL_TIMEOUT_MS = Number(process.env.COLLECT_GLOBAL_TIMEOUT_MS || 42000);
+const PREFLIGHT_FETCH_TIMEOUT_MS = Number(process.env.PREFLIGHT_FETCH_TIMEOUT_MS || 10000);
+const COLLECT_GLOBAL_TIMEOUT_MS = Number(process.env.COLLECT_GLOBAL_TIMEOUT_MS || 90000);
+const COLLECT_METHOD = String(process.env.COLLECT_METHOD || 'auto').trim();
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
 const RAW_SUPABASE_URL = String(process.env.SUPABASE_URL || '').trim();
 const RAW_SUPABASE_KEY = String(process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
@@ -516,6 +518,75 @@ async function runFetchDiagnostics(url, timeoutMs = DIAGNOSTIC_FETCH_TIMEOUT_MS)
 }
 
 
+async function chooseCollectFetchMethod() {
+  const configured = String(COLLECT_METHOD || 'auto').trim();
+  const allowed = ['node-fetch', 'https-ipv4', 'curl-ipv4'];
+
+  if (allowed.includes(configured)) {
+    return {
+      method: configured,
+      configured: true,
+      url: '',
+      results: [{
+        method: configured,
+        ok: true,
+        elapsedMs: 0,
+        htmlLength: 0,
+        lineCount: 0,
+        totalMarker: false,
+        error: 'COLLECT_METHOD 환경변수로 지정됨'
+      }]
+    };
+  }
+
+  const src = MFDS_SOURCES.find(x => x.board_id === 'm_99') || MFDS_SOURCES[0];
+  const pageUrl = mfdsPagedUrl(src.url, 1);
+  const results = [];
+
+  for (const method of allowed) {
+    const started = Date.now();
+    try {
+      const html = await runFetchMethod(pageUrl, method, PREFLIGHT_FETCH_TIMEOUT_MS);
+      const result = {
+        method,
+        ok: true,
+        elapsedMs: Date.now() - started,
+        htmlLength: html ? html.length : 0,
+        lineCount: html ? html.split(/\r?\n/).length : 0,
+        totalMarker: /전체\s*[0-9,]+\s*건/.test(html || ''),
+        error: ''
+      };
+      results.push(result);
+
+      // HTML을 실제로 받았고, 식약처 목록 표식이 있으면 이 방식을 수집 기본값으로 사용한다.
+      if (result.htmlLength > 0 && result.totalMarker) {
+        console.log(`[mfds-preflight] selected=${method} html=${result.htmlLength} lines=${result.lineCount}`);
+        return { method, configured: false, url: pageUrl, results };
+      }
+
+      // 전체건 표식은 없더라도 HTML이 충분히 크면 차선으로 사용한다.
+      if (result.htmlLength > 3000) {
+        console.log(`[mfds-preflight] selected=${method} without-total-marker html=${result.htmlLength} lines=${result.lineCount}`);
+        return { method, configured: false, url: pageUrl, results };
+      }
+    } catch (err) {
+      results.push({
+        method,
+        ok: false,
+        elapsedMs: Date.now() - started,
+        htmlLength: 0,
+        lineCount: 0,
+        totalMarker: false,
+        error: compactFetchError(err)
+      });
+      console.warn(`[mfds-preflight-error] ${method}: ${compactFetchError(err)}`);
+    }
+  }
+
+  return { method: null, configured: false, url: pageUrl, results };
+}
+
+
 function cleanMfdsTitle(title) {
   return norm(title).replace(/새로운게시물/g, '').replace(/\s+/g, ' ').trim();
 }
@@ -739,7 +810,7 @@ function parseMfdsRowsByDateBack($, pageUrl, startDate, endDate, boardId, catego
   return { rows, pageDates, lineCount: lines.length, totalMarker: lines.some(x => /전체\s*[0-9,]+\s*건/.test(x)) };
 }
 
-async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
+async function parseMfdsBoardPage(src, pageUrl, startDate, endDate, fetchOptions = {}) {
   const rows = [];
   const pageDates = [];
   const boardId = src.board_id;
@@ -762,7 +833,8 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
   };
 
   try {
-    const html = await fetchHtml(pageUrl, { mode: 'collect', timeoutMs: COLLECT_FETCH_TIMEOUT_MS, methods: ['node-fetch'] });
+    const selectedMethod = fetchOptions.method || 'node-fetch';
+    const html = await fetchHtml(pageUrl, { mode: 'collect', timeoutMs: fetchOptions.timeoutMs || COLLECT_FETCH_TIMEOUT_MS, methods: [selectedMethod] });
     const fetchInfo = LAST_FETCH_INFO.get(pageUrl) || {};
     diagnostics.fetchMethod = fetchInfo.method || '';
     diagnostics.fetchErrorDetail = fetchInfo.error || '';
@@ -799,7 +871,7 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
   }
 }
 
-async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
+async function parseMfdsBoard(src, startDate, endDate, maxPages = 40, fetchOptions = {}) {
   const allRows = [];
   const errors = [];
   const pageDiagnostics = [];
@@ -808,7 +880,7 @@ async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
 
   for (let pageNo = 1; pageNo <= Number(maxPages); pageNo += 1) {
     const pageUrl = mfdsPagedUrl(src.url, pageNo);
-    const { rows, pageDates, error, diagnostics } = await parseMfdsBoardPage(src, pageUrl, startDate, endDate);
+    const { rows, pageDates, error, diagnostics } = await parseMfdsBoardPage(src, pageUrl, startDate, endDate, fetchOptions);
     if (diagnostics) pageDiagnostics.push({ pageNo, ...diagnostics });
     if (error) errors.push(error);
 
@@ -1113,15 +1185,54 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
   const startedAt = Date.now();
   const days = Math.max(1, Math.floor((new Date(`${endDate}T00:00:00Z`) - new Date(`${startDate}T00:00:00Z`)) / 86400000) + 1);
 
-  // v22: Render 502 방지를 위해 /api/collect는 짧게 끝내는 것을 우선한다.
-  const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 5 : days <= 180 ? 12 : 20;
+  // v23: 실제 수집 전에 m_99 1페이지로 Render에서 성공하는 fetch 방식을 먼저 고른다.
+  // 목적은 timeout 메시지를 숨기는 것이 아니라 HTML > 0, 전체건=Y가 되는 수집 경로를 확정하는 것이다.
+  const preflight = await chooseCollectFetchMethod();
+  const selectedFetchMethod = preflight.method;
 
+  const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 5 : days <= 180 ? 10 : 15;
   const errors = [];
   const boardResults = [];
   let inserted = 0;
   let skipped = 0;
   let checked = 0;
   let stoppedByGlobalTimeout = false;
+
+  boardResults.push({
+    board_id: 'preflight',
+    category: '연결사전진단',
+    checked: 0,
+    inserted: 0,
+    skipped: 0,
+    latestDate: '',
+    latestPageDate: '',
+    fetchMethod: selectedFetchMethod || 'none',
+    fetchErrorDetail: selectedFetchMethod
+      ? `selected ${selectedFetchMethod}; ${preflight.results.map(r => `${r.method}:${r.ok ? 'OK' : 'FAIL'}:${r.elapsedMs}ms:${r.htmlLength}`).join(' / ')}`
+      : `no fetch method succeeded; ${preflight.results.map(r => `${r.method}:${r.error || 'failed'}`).join(' / ')}`,
+    htmlLength: preflight.results.find(r => r.method === selectedFetchMethod)?.htmlLength || 0,
+    lineCount: preflight.results.find(r => r.method === selectedFetchMethod)?.lineCount || 0,
+    totalMarker: preflight.results.find(r => r.method === selectedFetchMethod)?.totalMarker ? 'Y' : 'N',
+    anchorRows: 0,
+    datebackRows: 0,
+    dedupedRows: 0,
+    error: selectedFetchMethod ? '' : '식약처 HTML을 받을 수 있는 fetch 방식이 없습니다.'
+  });
+
+  if (!selectedFetchMethod) {
+    return {
+      inserted,
+      skipped,
+      checked,
+      boardResults,
+      errors: ['preflight failed: no fetch method succeeded'],
+      stoppedByGlobalTimeout: false,
+      elapsedMs: Date.now() - startedAt,
+      apiVersion: API_VERSION,
+      selectedFetchMethod: null,
+      preflight
+    };
+  }
 
   for (const src of MFDS_SOURCES) {
     if (Date.now() - startedAt > COLLECT_GLOBAL_TIMEOUT_MS) {
@@ -1148,7 +1259,10 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
     }
 
     try {
-      const result = await parseMfdsBoard(src, startDate, endDate, maxPages);
+      const result = await parseMfdsBoard(src, startDate, endDate, maxPages, {
+        method: selectedFetchMethod,
+        timeoutMs: COLLECT_FETCH_TIMEOUT_MS
+      });
       const insertResult = await dbInsertItems(result.rows);
 
       inserted += insertResult.inserted;
@@ -1165,7 +1279,7 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
         skipped: insertResult.skipped,
         latestDate: result.diagnostics?.latestDate || '',
         latestPageDate: result.diagnostics?.latestPageDate || '',
-        fetchMethod: firstPageDiag.fetchMethod || '',
+        fetchMethod: firstPageDiag.fetchMethod || selectedFetchMethod,
         fetchErrorDetail: firstPageDiag.fetchErrorDetail || '',
         htmlLength: firstPageDiag.htmlLength || 0,
         lineCount: firstPageDiag.lineCount || 0,
@@ -1186,7 +1300,7 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
         skipped: 0,
         latestDate: '',
         latestPageDate: '',
-        fetchMethod: 'exception',
+        fetchMethod: selectedFetchMethod,
         fetchErrorDetail: errText.slice(0, 1200),
         htmlLength: 0,
         lineCount: 0,
@@ -1204,6 +1318,7 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
   await setMeta('last_collect_range', `${startDate}~${endDate}`);
   await setMeta('last_collect_mode', collectMode);
   await setMeta('last_collect_checked', String(checked));
+  await setMeta('last_collect_fetch_method', selectedFetchMethod);
   return {
     inserted,
     skipped,
@@ -1212,7 +1327,9 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
     errors: errors.slice(0, 20),
     stoppedByGlobalTimeout,
     elapsedMs: Date.now() - startedAt,
-    apiVersion: API_VERSION
+    apiVersion: API_VERSION,
+    selectedFetchMethod,
+    preflight
   };
 }
 
@@ -1250,7 +1367,9 @@ app.get('/api/health', (_req, res) => {
     sources: MFDS_SOURCES.length,
     collectFetchTimeoutMs: COLLECT_FETCH_TIMEOUT_MS,
     collectGlobalTimeoutMs: COLLECT_GLOBAL_TIMEOUT_MS,
-    diagnosticFetchTimeoutMs: DIAGNOSTIC_FETCH_TIMEOUT_MS
+    diagnosticFetchTimeoutMs: DIAGNOSTIC_FETCH_TIMEOUT_MS,
+    preflightFetchTimeoutMs: PREFLIGHT_FETCH_TIMEOUT_MS,
+    collectMethod: COLLECT_METHOD
   });
 });
 
