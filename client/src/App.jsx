@@ -204,7 +204,12 @@ function App() {
     try {
       const data = await apiPost('/api/collect', { mode, ...range });
       const latestText = data.latestDate ? `, 수집 확인 최신일 ${data.latestDate}` : '';
-      setMessage(`${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 대상기간 ${data.startDate}~${data.endDate}, 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건${latestText}`);
+      const rssCount = Array.isArray(data.boardResults) ? data.boardResults.reduce((sum, b) => sum + Number(b?.rss?.matched || 0), 0) : 0;
+      const sourceText = rssCount ? `, RSS 확인 ${numberFmt(rssCount)}건` : '';
+      setMessage(`${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 대상기간 ${data.startDate}~${data.endDate}, 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건${sourceText}${latestText}`);
+      if (!Number(data.checked || 0) && Array.isArray(data.errors) && data.errors.length) {
+        setError(`수집 확인 0건입니다. 첫 오류: ${data.errors[0]}`);
+      }
       await loadOptions();
       await loadData(1, 1, nextFilters, selectedCategory);
     } catch (err) {
@@ -276,7 +281,7 @@ function App() {
       {message && <div className="notice ok">{message}</div>}
       {error && <div className="notice error">{error}</div>}
       {loading && <div className="notice info">데이터를 조회하는 중입니다.</div>}
-      {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. 빠른수집도 최근 게시물 확인을 위해 1~2페이지를 점검합니다.</div>}
+      {collecting && <div className="notice info">식약처 공식 RSS를 우선 수집하고, 필요한 경우 게시판 목록을 보조 확인합니다.</div>}
 
       <section className="stat-grid desktop-only">
         <Metric title="오늘 신규" value={headerStats.today} sub="오늘 게시 기준" icon={<FileText size={19} />} />

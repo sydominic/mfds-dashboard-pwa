@@ -1,27 +1,40 @@
-# 식약처 공식자료 대시보드 - React/Node/Render 전환 v20
+# MFDS Regulatory PWA v21 Node/Render RSS Collect Fix
 
-Streamlit v7 `app.py` 기능을 기준으로 React + Node/Express + Render Web Service 구조로 전환한 버전입니다.
+이 패키지는 **Node/React/Vite + Express 서버 + Render 배포용** 구조입니다.
+Python/Streamlit 실행 구조가 아니며, `app.py`, `requirements.txt`, Streamlit 실행 명령은 포함하지 않았습니다.
 
-## 주요 기능
-- 식약처 게시판 14개 수집
-- 수집 대상기간/최신일 진단 메시지 표시
-- 조회 / 빠른수집 / 기간수집
-- Supabase PostgreSQL 누적 저장
-- 식약처 정보 탭
-- 구분별 정보 탭
-- 공식 게시판 바로가기 탭
-- Render 무료 Web Service 배포 구조
+## 실행 구조
 
-## API
-- `GET /api/health`
-- `GET /api/options`
-- `GET /api/stats`
-- `GET /api/items`
-- `POST /api/collect`
-- `GET /api/boards`
+- Frontend: `client/` React + Vite
+- Backend: `server/src/index.js` Express API
+- Render: `render.yaml`, `render-build.sh`
+- 로컬 실행: `run_local.bat`
 
-## 배포
-`docs/RENDER_DEPLOY.md`를 참고하세요.
+## v21 핵심 수정
 
-## 제약뉴스 PWA 연결
-`docs/CONNECT_TO_NEWS_PWA.md`를 참고하세요.
+1. 식약처 공식 RSS를 1차 수집 경로로 사용합니다.
+2. 기존 HTML 게시판 파싱은 보조 경로로 유지합니다.
+3. 빠른수집/기간수집 결과에 RSS 확인 건수, HTML 확인 건수, 최신 확인일, 오류 요약을 표시합니다.
+4. `/api/health`의 `apiVersion`은 `v21-rss-primary-collect-fix`입니다.
+
+## Render 배포
+
+Render Web Service 기준은 기존과 동일합니다.
+
+- Environment: Node
+- Build Command: `bash render-build.sh`
+- Start Command: `node server/src/index.js`
+- Health Check Path: `/api/health`
+
+## 로컬 확인
+
+1. `run_local.bat` 실행
+2. 브라우저에서 앱 접속
+3. `/api/health`에서 `apiVersion` 확인
+4. 기간을 `2026-05-21~2026-05-28` 등으로 설정 후 빠른수집/기간수집 확인
+
+## Git commit message
+
+```bash
+fix: switch MFDS collection to official RSS in Node Render app
+```

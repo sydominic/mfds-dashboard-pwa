@@ -1,0 +1,22 @@
+MFDS Regulatory PWA v21 Node/Render RSS Collect Fix
+
+Purpose
+- Repackage v21 as a clear Node/React/Vite + Express + Render version.
+- No Python/Streamlit runtime is included.
+
+Changed
+- Server collection logic remains in server/src/index.js.
+- Official MFDS RSS is used as the primary collection path.
+- HTML list crawling remains as fallback/auxiliary collection.
+- Client collection result message exposes RSS checked count and diagnostics.
+- Render deployment files remain Node based: render.yaml and render-build.sh.
+
+API version
+- v21-rss-primary-collect-fix
+
+Local run
+- run_local.bat
+
+Render
+- buildCommand: bash render-build.sh
+- startCommand: node server/src/index.js

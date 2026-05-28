@@ -48,7 +48,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v20-collect-range-diagnostics';
+const API_VERSION = 'v21-rss-primary-collect-fix';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
 const RAW_DATABASE_URL = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || '').trim();
@@ -80,20 +80,20 @@ const BOARD_ID_LABEL_MAP = {
 };
 
 const MFDS_SOURCES = [
-  { board_id: 'm_74', url: 'https://www.mfds.go.kr/brd/m_74/list.do' },
-  { board_id: 'm_76', url: 'https://www.mfds.go.kr/brd/m_76/list.do' },
-  { board_id: 'm_99', url: 'https://www.mfds.go.kr/brd/m_99/list.do' },
-  { board_id: 'm_203', url: 'https://www.mfds.go.kr/brd/m_203/list.do' },
-  { board_id: 'm_211', url: 'https://www.mfds.go.kr/brd/m_211/list.do' },
-  { board_id: 'm_212', url: 'https://www.mfds.go.kr/brd/m_212/list.do' },
-  { board_id: 'm_215', url: 'https://www.mfds.go.kr/brd/m_215/list.do' },
-  { board_id: 'm_207', url: 'https://www.mfds.go.kr/brd/m_207/list.do' },
-  { board_id: 'm_209', url: 'https://www.mfds.go.kr/brd/m_209/list.do' },
-  { board_id: 'm_1059', url: 'https://www.mfds.go.kr/brd/m_1059/list.do' },
-  { board_id: 'm_1060', url: 'https://www.mfds.go.kr/brd/m_1060/list.do' },
-  { board_id: 'm_218', url: 'https://www.mfds.go.kr/brd/m_218/list.do' },
-  { board_id: 'm_220', url: 'https://www.mfds.go.kr/brd/m_220/list.do' },
-  { board_id: 'm_231', url: 'https://www.mfds.go.kr/brd/m_231/list.do' }
+  { board_id: 'm_74', rss_brd_id: 'ntc0003', url: 'https://www.mfds.go.kr/brd/m_74/list.do' },
+  { board_id: 'm_76', rss_brd_id: 'ntc0004', url: 'https://www.mfds.go.kr/brd/m_76/list.do' },
+  { board_id: 'm_99', rss_brd_id: 'ntc0021', url: 'https://www.mfds.go.kr/brd/m_99/list.do' },
+  { board_id: 'm_203', rss_brd_id: 'data0003', url: 'https://www.mfds.go.kr/brd/m_203/list.do' },
+  { board_id: 'm_211', rss_brd_id: 'data0005', url: 'https://www.mfds.go.kr/brd/m_211/list.do' },
+  { board_id: 'm_212', rss_brd_id: 'data0006', url: 'https://www.mfds.go.kr/brd/m_212/list.do' },
+  { board_id: 'm_215', rss_brd_id: 'data0007', url: 'https://www.mfds.go.kr/brd/m_215/list.do' },
+  { board_id: 'm_207', rss_brd_id: 'data0008', url: 'https://www.mfds.go.kr/brd/m_207/list.do' },
+  { board_id: 'm_209', rss_brd_id: 'data0009', url: 'https://www.mfds.go.kr/brd/m_209/list.do' },
+  { board_id: 'm_1059', rss_brd_id: 'data0010', url: 'https://www.mfds.go.kr/brd/m_1059/list.do' },
+  { board_id: 'm_1060', rss_brd_id: 'data0011', url: 'https://www.mfds.go.kr/brd/m_1060/list.do' },
+  { board_id: 'm_218', rss_brd_id: 'data0013', url: 'https://www.mfds.go.kr/brd/m_218/list.do' },
+  { board_id: 'm_220', rss_brd_id: 'data0014', url: 'https://www.mfds.go.kr/brd/m_220/list.do' },
+  { board_id: 'm_231', rss_brd_id: 'data0020', url: 'https://www.mfds.go.kr/brd/m_231/list.do' }
 ];
 
 
@@ -326,7 +326,10 @@ async function fetchHtml(url, timeoutMs = 12000) {
         signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) MFDSDashboard/NodeRender',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+          'Accept': 'text/html,application/xhtml+xml,application/xml,application/rss+xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -342,31 +345,126 @@ async function fetchHtml(url, timeoutMs = 12000) {
   throw lastError;
 }
 
+function rssUrlFor(src) {
+  if (!src?.rss_brd_id) return '';
+  const u = new URL('https://www.mfds.go.kr/www/rss/brd.do');
+  u.searchParams.set('brdId', src.rss_brd_id);
+  return u.toString();
+}
+
+function parseDateFromRssValue(value) {
+  const direct = parseDateAny(value);
+  if (direct) return direct;
+  const raw = norm(value);
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) return toKstDateString(d);
+  return null;
+}
+
+function rssItemText($item, selectors) {
+  for (const selector of selectors) {
+    const value = norm($item.find(selector).first().text());
+    if (value) return value;
+  }
+  return '';
+}
+
+async function parseMfdsRssFeed(src, startDate, endDate) {
+  const rows = [];
+  const feedDates = [];
+  const rssUrl = rssUrlFor(src);
+  const boardId = src.board_id;
+  const category = boardLabel(boardId);
+  if (!rssUrl) return { rows, feedDates, rssItems: 0, latestDate: '', url: '', error: 'RSS 주소가 설정되지 않았습니다.' };
+
+  try {
+    const xml = await fetchHtml(rssUrl, 12000);
+    const $ = cheerio.load(xml, { xmlMode: true, decodeEntities: true });
+    const items = $('item').toArray();
+
+    for (const el of items) {
+      const $item = $(el);
+      const title = rssItemText($item, ['title']);
+      if (isBadTitle(title)) continue;
+
+      const linkRaw = rssItemText($item, ['link', 'guid']);
+      const desc = rssItemText($item, ['description', 'summary', 'content\:encoded']);
+      const pubRaw = rssItemText($item, ['pubDate', 'date', 'dc\:date', 'published', 'updated']);
+      const d = parseDateFromRssValue(pubRaw) || parseDateAny(`${title} ${desc}`);
+      if (!d) continue;
+      feedDates.push(d);
+
+      let link = src.url;
+      if (linkRaw) {
+        try { link = new URL(linkRaw, 'https://www.mfds.go.kr').toString(); }
+        catch { link = src.url; }
+      }
+
+      if (compareDate(d, startDate) < 0 || compareDate(d, endDate) > 0) continue;
+      rows.push({ site: '식약처', category, board_id: boardId, item_date: d, title, url: link });
+    }
+
+    const latestDate = feedDates.slice().sort().at(-1) || '';
+    return { rows, feedDates, rssItems: items.length, latestDate, url: rssUrl, error: null };
+  } catch (err) {
+    return { rows, feedDates, rssItems: 0, latestDate: '', url: rssUrl, error: `${boardId} RSS ${rssUrl}: ${err?.message || err}` };
+  }
+}
+
 function collectBoardCandidates($) {
   const selectors = [
     '#contents li',
     '#content li',
+    '#container li',
     '.board_list li',
     '.board-list li',
     '.bbs_list li',
     '.brd_list li',
     '.list li',
+    '.board-wrap li',
     'table tbody tr',
     'li',
     'tr'
   ];
   const seen = new Set();
   const candidates = [];
+
+  const addCandidate = (el) => {
+    if (!el || seen.has(el)) return;
+    const txt = norm($(el).text());
+    if (!txt || txt.length > 3500 || !pickBoardItemDate(txt)) return;
+    if (!$(el).find('a[href]').length) return;
+    seen.add(el);
+    candidates.push(el);
+  };
+
   for (const selector of selectors) {
-    $(selector).each((_, el) => {
-      if (seen.has(el)) return;
-      const txt = norm($(el).text());
-      if (!txt || !pickBoardItemDate(txt)) return;
-      if (!$(el).find('a[href]').length) return;
-      seen.add(el);
-      candidates.push(el);
-    });
+    $(selector).each((_, el) => addCandidate(el));
   }
+
+  // 식약처 목록 HTML 구조가 바뀌어 li/tr 단위가 깨져도, 제목 anchor 주변 부모에서 날짜를 찾도록 2차 탐색한다.
+  $('a[href]').each((_, a) => {
+    const aText = norm($(a).text());
+    const href = $(a).attr('href') || '';
+    if (isBadTitle(aText)) return;
+    if (['다운받기', '미리보기', '열기', '펼치기', '접기'].includes(aText)) return;
+    if (/\.(pdf|hwp|hwpx|xlsx?|docx?|pptx?|zip|png|jpe?g)$/i.test(href)) return;
+    if (href.includes('download') || href.includes('Down') || href.includes('File')) return;
+
+    let current = $(a);
+    for (let depth = 0; depth < 6; depth += 1) {
+      const parent = current.parent();
+      if (!parent || !parent.length) break;
+      const txt = norm(parent.text());
+      if (txt && txt.length <= 3500 && pickBoardItemDate(txt)) {
+        addCandidate(parent.get(0));
+        break;
+      }
+      current = parent;
+    }
+  });
+
   return candidates;
 }
 
@@ -431,7 +529,7 @@ async function parseMfdsBoardPage(src, pageUrl, startDate, endDate) {
   }
 }
 
-async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
+async function parseMfdsBoardHtml(src, startDate, endDate, maxPages = 40) {
   const allRows = [];
   const errors = [];
   const pageDiagnostics = [];
@@ -478,6 +576,36 @@ async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
   }
 
   return { rows: deduped, errors, pageDiagnostics };
+}
+
+async function parseMfdsBoard(src, startDate, endDate, maxPages = 40) {
+  const rss = await parseMfdsRssFeed(src, startDate, endDate);
+  const needsHtmlFallback = Boolean(rss.error) || rss.rows.length === 0 || Number(maxPages) > 2;
+  const html = needsHtmlFallback
+    ? await parseMfdsBoardHtml(src, startDate, endDate, maxPages)
+    : { rows: [], errors: [], pageDiagnostics: [] };
+
+  const merged = [];
+  const seen = new Set();
+  for (const r of [...rss.rows, ...html.rows]) {
+    const key = itemHash(r.site, r.category, r.item_date, r.title, r.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(r);
+  }
+
+  const errors = [];
+  if (rss.error) errors.push(rss.error);
+  errors.push(...(html.errors || []));
+  const latestDate = [...rss.feedDates, ...merged.map(x => x.item_date)].filter(Boolean).sort().at(-1) || '';
+
+  return {
+    rows: sortItemsByDateDesc(merged),
+    errors,
+    latestDate,
+    rss: { url: rss.url, items: rss.rssItems, matched: rss.rows.length, latestDate: rss.latestDate, error: rss.error },
+    pageDiagnostics: html.pageDiagnostics || []
+  };
 }
 
 async function initDb() {
@@ -752,12 +880,13 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
     const result = await parseMfdsBoard(src, safeStart, safeEnd, maxPages);
     rows.push(...result.rows);
     errors.push(...result.errors);
-    const latestDate = result.rows.map(x => x.item_date).sort().at(-1) || '';
+    const latestDate = result.latestDate || result.rows.map(x => x.item_date).sort().at(-1) || '';
     boardResults.push({
       board_id: src.board_id,
       category: boardLabel(src.board_id),
       count: result.rows.length,
       latestDate,
+      rss: result.rss,
       pages: result.pageDiagnostics,
       errors: result.errors.slice(0, 2)
     });
@@ -777,7 +906,7 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
   const latestDate = uniqueRows.map(x => x.item_date).sort().at(-1) || '';
   await setMeta('last_collect_range', `${safeStart}~${safeEnd}`);
   await setMeta('last_collect_mode', collectMode);
-  await setMeta('last_collect_summary', JSON.stringify({ at: kstNowString(), mode: collectMode, startDate: safeStart, endDate: safeEnd, checked: uniqueRows.length, inserted, skipped, latestDate }));
+  await setMeta('last_collect_summary', JSON.stringify({ at: kstNowString(), mode: collectMode, startDate: safeStart, endDate: safeEnd, checked: uniqueRows.length, inserted, skipped, latestDate, boardResults, errors: errors.slice(0, 20) }));
   return { startDate: safeStart, endDate: safeEnd, inserted, skipped, checked: uniqueRows.length, latestDate, boardResults, errors: errors.slice(0, 20) };
 }
 
@@ -811,7 +940,8 @@ app.get('/api/health', (_req, res) => {
     port: PORT,
     host: HOST,
     today: getTodayKst(),
-    sources: MFDS_SOURCES.length
+    sources: MFDS_SOURCES.length,
+    rssSources: MFDS_SOURCES.filter(x => x.rss_brd_id).length
   });
 });
 
