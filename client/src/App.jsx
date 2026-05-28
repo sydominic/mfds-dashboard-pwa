@@ -132,6 +132,7 @@ function App() {
   const [error, setError] = useState('');
   const [collectReport, setCollectReport] = useState([]);
   const [fetchDiag, setFetchDiag] = useState(null);
+  const [collectProgress, setCollectProgress] = useState({ done: 0, total: 0, current: '' });
   const [apiVersion, setApiVersion] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const dataRequestRef = useRef(0);
@@ -190,12 +191,84 @@ function App() {
     setCollecting(true);
     setError('');
     setMessage('');
+    setCollectReport([]);
+    setFetchDiag(null);
+    setCollectProgress({ done: 0, total: 0, current: '연결사전진단' });
+
     try {
       const range = periodDatesForClient(filters.period, filters.startDate, filters.endDate);
-      const data = await apiPost('/api/collect', { mode, ...range });
-      setCollectReport(data.boardResults || []);
-      setApiVersion(data.apiVersion || apiVersion);
-      setMessage(`${data.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건${data.selectedFetchMethod ? ` · FETCH ${data.selectedFetchMethod}` : ''}`);
+
+      const preflight = await apiPost('/api/collect-preflight', {});
+      setApiVersion(preflight.apiVersion || apiVersion);
+      const selectedFetchMethod = preflight.selectedFetchMethod;
+      const firstReport = preflight.boardResult ? [preflight.boardResult] : [];
+      setCollectReport(firstReport);
+      setFetchDiag({
+        apiVersion: preflight.apiVersion,
+        board_id: 'm_99',
+        category: '보도자료',
+        url: preflight.preflight?.url || '',
+        timeoutMs: null,
+        results: preflight.preflight?.results || []
+      });
+
+      if (!selectedFetchMethod) {
+        setMessage(`${preflight.apiVersion || apiVersion || 'api'} · 연결사전진단 실패: 식약처 HTML 수신 방식이 확인되지 않았습니다.`);
+        return;
+      }
+
+      const boards = options.boards?.length ? options.boards : (await apiGet('/api/boards')).boards || [];
+      let reports = [...firstReport];
+      let totalInserted = 0;
+      let totalSkipped = 0;
+      let totalChecked = 0;
+
+      setCollectProgress({ done: 0, total: boards.length, current: '' });
+
+      for (let i = 0; i < boards.length; i += 1) {
+        const b = boards[i];
+        setCollectProgress({ done: i, total: boards.length, current: `${b.category}(${b.board_id})` });
+
+        try {
+          const data = await apiPost('/api/collect-board', {
+            mode,
+            ...range,
+            board_id: b.board_id,
+            fetchMethod: selectedFetchMethod
+          });
+
+          if (data.boardResult) {
+            reports = [...reports.filter(x => x.board_id !== data.boardResult.board_id), data.boardResult];
+            setCollectReport(reports);
+          }
+          totalInserted += Number(data.inserted || 0);
+          totalSkipped += Number(data.skipped || 0);
+          totalChecked += Number(data.checked || 0);
+        } catch (boardErr) {
+          const failedRow = {
+            category: b.category,
+            board_id: b.board_id,
+            checked: 0,
+            inserted: 0,
+            skipped: 0,
+            latestDate: '',
+            latestPageDate: '',
+            fetchMethod: selectedFetchMethod,
+            htmlLength: 0,
+            lineCount: 0,
+            totalMarker: 'N',
+            anchorRows: 0,
+            datebackRows: 0,
+            error: boardErr.message || String(boardErr),
+            fetchErrorDetail: boardErr.message || String(boardErr)
+          };
+          reports = [...reports.filter(x => x.board_id !== b.board_id), failedRow];
+          setCollectReport(reports);
+        }
+      }
+
+      setCollectProgress({ done: boards.length, total: boards.length, current: '' });
+      setMessage(`${preflight.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(totalInserted)}건, 중복 ${numberFmt(totalSkipped)}건, 확인 ${numberFmt(totalChecked)}건 / 방식 ${selectedFetchMethod}`);
       await loadOptions();
       await loadData(1, 1, filters);
     } catch (err) {
@@ -206,24 +279,13 @@ function App() {
   }
 
 
+
   async function runFetchDiagnostics() {
     setCollecting(true);
     setError('');
     setMessage('');
     try {
-      const res = await fetch('/api/fetch-diagnostics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ board_id: 'm_99' })
-      });
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(`서버가 JSON이 아닌 응답을 반환했습니다. ${text.slice(0, 300)}`);
-      }
-      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await apiPost('/api/fetch-diagnostics', { board_id: 'm_99' });
       setFetchDiag(data);
       const ok = data.results?.find(x => x.ok);
       setMessage(ok ? `${data.apiVersion} 연결진단 완료: ${ok.method} 방식으로 HTML 수신 성공` : `${data.apiVersion} 연결진단 완료: 모든 방식 실패`);
@@ -297,7 +359,7 @@ function App() {
       {message && <div className="notice ok">{message}</div>}
       {error && <div className="notice error">{error}</div>}
       {loading && <div className="notice info">데이터를 조회하는 중입니다.</div>}
-      {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. 기간수집은 시간이 걸릴 수 있습니다.</div>}
+      {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. {collectProgress.total ? `${collectProgress.done}/${collectProgress.total} ${collectProgress.current || ''}` : ''}</div>}
       <CollectDiagnostics report={collectReport} apiVersion={apiVersion} />
       <FetchDiagnostics data={fetchDiag} />
 

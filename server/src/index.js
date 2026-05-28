@@ -51,7 +51,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const JSON_STORE_PATH = path.join(DATA_DIR, 'mfds_items_store.json');
 const JSON_META_PATH = path.join(DATA_DIR, 'mfds_meta_store.json');
 
-const API_VERSION = 'v23-auto-fetch-method-collect';
+const API_VERSION = 'v24-board-by-board-json-collect';
 const PORT = Number(process.env.PORT || process.env.LOCAL_API_PORT || 8892);
 const HOST = process.env.HOST || '0.0.0.0';
 const COLLECT_FETCH_TIMEOUT_MS = Number(process.env.COLLECT_FETCH_TIMEOUT_MS || 12000);
@@ -1334,6 +1334,87 @@ async function collectMfdsToDb(startDate, endDate, collectMode = 'period') {
 }
 
 
+async function collectSingleMfdsBoardToDb(src, startDate, endDate, collectMode = 'fast', fetchMethod = 'node-fetch') {
+  const startedAt = Date.now();
+  const days = Math.max(1, Math.floor((new Date(`${endDate}T00:00:00Z`) - new Date(`${startDate}T00:00:00Z`)) / 86400000) + 1);
+  const maxPages = collectMode === 'fast' ? 1 : days <= 31 ? 5 : days <= 180 ? 10 : 15;
+
+  const result = await parseMfdsBoard(src, startDate, endDate, maxPages, {
+    method: fetchMethod,
+    timeoutMs: COLLECT_FETCH_TIMEOUT_MS
+  });
+  const insertResult = await dbInsertItems(result.rows);
+  const firstPageDiag = result.diagnostics?.pages?.[0] || {};
+  const boardResult = {
+    board_id: src.board_id,
+    category: boardLabel(src.board_id),
+    checked: result.rows.length,
+    inserted: insertResult.inserted,
+    skipped: insertResult.skipped,
+    latestDate: result.diagnostics?.latestDate || '',
+    latestPageDate: result.diagnostics?.latestPageDate || '',
+    fetchMethod: firstPageDiag.fetchMethod || fetchMethod || '',
+    fetchErrorDetail: firstPageDiag.fetchErrorDetail || '',
+    htmlLength: firstPageDiag.htmlLength || 0,
+    lineCount: firstPageDiag.lineCount || 0,
+    totalMarker: firstPageDiag.totalMarker ? 'Y' : 'N',
+    anchorRows: firstPageDiag.anchorRows || 0,
+    datebackRows: firstPageDiag.datebackRows || 0,
+    dedupedRows: firstPageDiag.dedupedRows || 0,
+    error: result.errors?.[0] || firstPageDiag.fetchErrorDetail || firstPageDiag.error || '',
+    elapsedMs: Date.now() - startedAt
+  };
+
+  await setMeta('last_collect_range', `${startDate}~${endDate}`);
+  await setMeta('last_collect_mode', collectMode);
+  await setMeta('last_collect_checked', String(result.rows.length));
+  await setMeta('last_collect_fetch_method', fetchMethod || '');
+
+  return {
+    inserted: insertResult.inserted,
+    skipped: insertResult.skipped,
+    checked: result.rows.length,
+    boardResult,
+    errors: result.errors || [],
+    elapsedMs: Date.now() - startedAt,
+    apiVersion: API_VERSION,
+    selectedFetchMethod: fetchMethod
+  };
+}
+
+function selectPreflightMethod(results = []) {
+  const strong = results.find(r => r.ok && r.htmlLength > 0 && r.totalMarker);
+  if (strong) return strong.method;
+  const usable = results.find(r => r.ok && Number(r.htmlLength || 0) > 3000);
+  if (usable) return usable.method;
+  return null;
+}
+
+function makePreflightBoardResult(preflight, selectedMethod) {
+  const selected = preflight?.results?.find(r => r.method === selectedMethod);
+  return {
+    board_id: 'preflight',
+    category: '연결사전진단',
+    checked: 0,
+    inserted: 0,
+    skipped: 0,
+    latestDate: '',
+    latestPageDate: '',
+    fetchMethod: selectedMethod || 'none',
+    fetchErrorDetail: selectedMethod
+      ? `selected ${selectedMethod}; ${(preflight.results || []).map(r => `${r.method}:${r.ok ? 'OK' : 'FAIL'}:${r.elapsedMs}ms:${r.htmlLength}`).join(' / ')}`
+      : `no fetch method succeeded; ${(preflight?.results || []).map(r => `${r.method}:${r.error || 'failed'}`).join(' / ')}`,
+    htmlLength: selected?.htmlLength || 0,
+    lineCount: selected?.lineCount || 0,
+    totalMarker: selected?.totalMarker ? 'Y' : 'N',
+    anchorRows: 0,
+    datebackRows: 0,
+    dedupedRows: 0,
+    error: selectedMethod ? '' : '식약처 HTML을 받을 수 있는 fetch 방식이 없습니다.'
+  };
+}
+
+
 function parseQueryRange(req) {
   const { period = 'recent7', startDate, endDate } = req.query || {};
   return periodRange(period, startDate, endDate);
@@ -1447,8 +1528,75 @@ app.post('/api/collect', async (req, res, next) => {
   }
 });
 
+app.post('/api/collect-preflight', async (_req, res, next) => {
+  try {
+    const src = MFDS_SOURCES.find(x => x.board_id === 'm_99') || MFDS_SOURCES[0];
+    const pageUrl = mfdsPagedUrl(src.url, 1);
+    const results = await runFetchDiagnostics(pageUrl, PREFLIGHT_FETCH_TIMEOUT_MS);
+    const selectedFetchMethod = selectPreflightMethod(results);
+    const preflight = {
+      configured: false,
+      url: pageUrl,
+      results,
+      method: selectedFetchMethod
+    };
+    res.json({
+      ok: true,
+      apiVersion: API_VERSION,
+      selectedFetchMethod,
+      preflight,
+      boardResult: makePreflightBoardResult(preflight, selectedFetchMethod)
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/collect-board', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const boardId = String(body.board_id || body.boardId || '').trim();
+    const src = MFDS_SOURCES.find(x => x.board_id === boardId);
+    if (!src) {
+      res.status(400).json({ ok: false, apiVersion: API_VERSION, error: `Unknown board_id: ${boardId}` });
+      return;
+    }
+
+    const mode = body.mode === 'fast' ? 'fast' : 'period';
+    const today = getTodayKst();
+    const startDate = body.startDate || addDays(today, -7);
+    const endDate = body.endDate || today;
+    let fetchMethod = String(body.fetchMethod || body.method || '').trim();
+
+    if (!fetchMethod || fetchMethod === 'auto') {
+      const preflight = await chooseCollectFetchMethod();
+      fetchMethod = preflight.method || 'node-fetch';
+    }
+
+    const result = await collectSingleMfdsBoardToDb(src, startDate, endDate, mode, fetchMethod);
+    res.json({
+      ok: true,
+      mode,
+      startDate,
+      endDate,
+      board_id: src.board_id,
+      category: boardLabel(src.board_id),
+      ...result,
+      lastCollected: await dbLastCollected()
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
 app.get('/api/boards', (_req, res) => {
   res.json({ boards: MFDS_SOURCES.map(x => ({ board_id: x.board_id, category: boardLabel(x.board_id), url: x.url })) });
+});
+
+
+app.use('/api', (req, res) => {
+  res.status(404).json({ ok: false, apiVersion: API_VERSION, error: `API route not found: ${req.method} ${req.originalUrl}` });
 });
 
 if (fs.existsSync(CLIENT_DIST)) {
@@ -1459,9 +1607,15 @@ if (fs.existsSync(CLIENT_DIST)) {
   });
 }
 
-app.use((err, _req, res, _next) => {
-  console.error('[api error]', err);
-  res.status(500).json({ ok: false, error: String(err?.message || err).slice(0, 1000) });
+app.use((err, req, res, _next) => {
+  console.error('[api error]', req?.method, req?.originalUrl, err);
+  if (res.headersSent) return;
+  res.status(500).type('application/json').json({
+    ok: false,
+    apiVersion: API_VERSION,
+    error: String(err?.message || err).slice(0, 1500),
+    route: `${req?.method || ''} ${req?.originalUrl || ''}`.trim()
+  });
 });
 
 app.listen(PORT, HOST, async () => {

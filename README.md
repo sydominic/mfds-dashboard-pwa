@@ -53,3 +53,10 @@ Streamlit v7 `app.py` 기능을 기준으로 React + Node/Express + Render Web S
 - 선택된 방식으로 전체 게시판 수집을 수행합니다.
 - 게시판별 진단표 첫 행에 `연결사전진단` 결과를 표시합니다.
 - 수집 완료 메시지에 선택된 FETCH 방식을 표시합니다.
+
+
+## V24 변경사항
+- Render 502/503 HTML 응답 문제를 줄이기 위해 수집을 게시판 단위로 분리했습니다.
+- React 수집 버튼은 `/api/collect-preflight` 후 `/api/collect-board`를 게시판별로 순차 호출합니다.
+- API 미등록/오류 상황에서도 HTML 대신 JSON 응답을 반환하도록 보강했습니다.
+- 수집 중 진행상황과 게시판별 진단표를 누적 표시합니다.
