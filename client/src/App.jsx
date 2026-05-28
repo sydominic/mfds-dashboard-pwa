@@ -60,21 +60,21 @@ async function apiGet(path) {
   return json;
 }
 
-async function apiPost(url, body) {
-  const res = await fetch(url, {
+async function apiPost(path, body) {
+  const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body || {})
   });
   const text = await res.text();
-  let data;
+  let json;
   try {
-    data = JSON.parse(text);
+    json = JSON.parse(text);
   } catch {
-    throw new Error(`서버가 JSON이 아닌 응답을 반환했습니다. ${text.slice(0, 300)}`);
+    throw new Error(text || `HTTP ${res.status}`);
   }
-  if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`);
-  return data;
+  if (!res.ok || json.ok === false) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
 }
 
 function periodDatesForClient(period, startDate, endDate) {
@@ -94,6 +94,12 @@ function normalizeFilters(input) {
     endDate: range.endDate,
     q: base.q || ''
   };
+}
+
+function validateRange(range) {
+  if (!range?.startDate || !range?.endDate) return '시작일과 종료일을 확인해 주세요.';
+  if (range.startDate > range.endDate) return '시작일이 종료일보다 늦습니다. 날짜를 다시 확인해 주세요.';
+  return '';
 }
 
 function emptyPage(pageSize = 10) {
@@ -130,10 +136,6 @@ function App() {
   const [collecting, setCollecting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [collectReport, setCollectReport] = useState([]);
-  const [fetchDiag, setFetchDiag] = useState(null);
-  const [collectProgress, setCollectProgress] = useState({ done: 0, total: 0, current: '' });
-  const [apiVersion, setApiVersion] = useState('');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const dataRequestRef = useRef(0);
 
@@ -161,7 +163,6 @@ function App() {
       ]);
       if (requestId !== dataRequestRef.current) return;
       setStats(statsData);
-      setApiVersion(statsData?.apiVersion || listData?.apiVersion || '');
       setItems(listData);
       setCategoryItems(categoryData);
     } catch (err) {
@@ -188,109 +189,26 @@ function App() {
   }
 
   async function collect(mode) {
+    const nextFilters = normalizeFilters(draft);
+    const range = periodDatesForClient(nextFilters.period, nextFilters.startDate, nextFilters.endDate);
+    const rangeError = validateRange(range);
+    if (rangeError) {
+      setError(rangeError);
+      return;
+    }
+    setFilters(nextFilters);
+    setDraft(nextFilters);
     setCollecting(true);
     setError('');
     setMessage('');
-    setCollectReport([]);
-    setFetchDiag(null);
-    setCollectProgress({ done: 0, total: 0, current: '연결사전진단' });
-
     try {
-      const range = periodDatesForClient(filters.period, filters.startDate, filters.endDate);
-
-      const preflight = await apiPost('/api/collect-preflight', {});
-      setApiVersion(preflight.apiVersion || apiVersion);
-      const selectedFetchMethod = preflight.selectedFetchMethod;
-      const firstReport = preflight.boardResult ? [preflight.boardResult] : [];
-      setCollectReport(firstReport);
-      setFetchDiag({
-        apiVersion: preflight.apiVersion,
-        board_id: 'm_99',
-        category: '보도자료',
-        url: preflight.preflight?.url || '',
-        timeoutMs: null,
-        results: preflight.preflight?.results || []
-      });
-
-      if (!selectedFetchMethod) {
-        setMessage(`${preflight.apiVersion || apiVersion || 'api'} · 연결사전진단 실패: 식약처 HTML 수신 방식이 확인되지 않았습니다.`);
-        return;
-      }
-
-      const boards = options.boards?.length ? options.boards : (await apiGet('/api/boards')).boards || [];
-      let reports = [...firstReport];
-      let totalInserted = 0;
-      let totalSkipped = 0;
-      let totalChecked = 0;
-
-      setCollectProgress({ done: 0, total: boards.length, current: '' });
-
-      for (let i = 0; i < boards.length; i += 1) {
-        const b = boards[i];
-        setCollectProgress({ done: i, total: boards.length, current: `${b.category}(${b.board_id})` });
-
-        try {
-          const data = await apiPost('/api/collect-board', {
-            mode,
-            ...range,
-            board_id: b.board_id,
-            fetchMethod: selectedFetchMethod
-          });
-
-          if (data.boardResult) {
-            reports = [...reports.filter(x => x.board_id !== data.boardResult.board_id), data.boardResult];
-            setCollectReport(reports);
-          }
-          totalInserted += Number(data.inserted || 0);
-          totalSkipped += Number(data.skipped || 0);
-          totalChecked += Number(data.checked || 0);
-        } catch (boardErr) {
-          const failedRow = {
-            category: b.category,
-            board_id: b.board_id,
-            checked: 0,
-            inserted: 0,
-            skipped: 0,
-            latestDate: '',
-            latestPageDate: '',
-            fetchMethod: selectedFetchMethod,
-            htmlLength: 0,
-            lineCount: 0,
-            totalMarker: 'N',
-            anchorRows: 0,
-            datebackRows: 0,
-            error: boardErr.message || String(boardErr),
-            fetchErrorDetail: boardErr.message || String(boardErr)
-          };
-          reports = [...reports.filter(x => x.board_id !== b.board_id), failedRow];
-          setCollectReport(reports);
-        }
-      }
-
-      setCollectProgress({ done: boards.length, total: boards.length, current: '' });
-      setMessage(`${preflight.apiVersion || apiVersion || 'api'} · ${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 신규 ${numberFmt(totalInserted)}건, 중복 ${numberFmt(totalSkipped)}건, 확인 ${numberFmt(totalChecked)}건 / 방식 ${selectedFetchMethod}`);
+      const data = await apiPost('/api/collect', { mode, ...range });
+      const latestText = data.latestDate ? `, 수집 확인 최신일 ${data.latestDate}` : '';
+      setMessage(`${mode === 'fast' ? '빠른수집' : '기간수집'} 완료: 대상기간 ${data.startDate}~${data.endDate}, 신규 ${numberFmt(data.inserted)}건, 중복 ${numberFmt(data.skipped)}건, 확인 ${numberFmt(data.checked)}건${latestText}`);
       await loadOptions();
-      await loadData(1, 1, filters);
+      await loadData(1, 1, nextFilters, selectedCategory);
     } catch (err) {
       setError(`수집 실패: ${err.message}`);
-    } finally {
-      setCollecting(false);
-    }
-  }
-
-
-
-  async function runFetchDiagnostics() {
-    setCollecting(true);
-    setError('');
-    setMessage('');
-    try {
-      const data = await apiPost('/api/fetch-diagnostics', { board_id: 'm_99' });
-      setFetchDiag(data);
-      const ok = data.results?.find(x => x.ok);
-      setMessage(ok ? `${data.apiVersion} 연결진단 완료: ${ok.method} 방식으로 HTML 수신 성공` : `${data.apiVersion} 연결진단 완료: 모든 방식 실패`);
-    } catch (err) {
-      setError(`연결진단 실패: ${err.message || err}`);
     } finally {
       setCollecting(false);
     }
@@ -335,7 +253,6 @@ function App() {
             <span><i className="dot dot-blue" /> MFDS</span>
             <span><i className="dot dot-green" /> {stats?.totalStored !== undefined ? 'DB 연결됨' : 'DB 확인 중'}</span>
             <span><i className="dot dot-amber" /> 마지막 수집: {stats?.lastCollected || '-'}</span>
-            <span><i className="dot dot-blue" /> {apiVersion || 'api 확인 중'}</span>
           </div>
         </div>
       </header>
@@ -359,9 +276,7 @@ function App() {
       {message && <div className="notice ok">{message}</div>}
       {error && <div className="notice error">{error}</div>}
       {loading && <div className="notice info">데이터를 조회하는 중입니다.</div>}
-      {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. {collectProgress.total ? `${collectProgress.done}/${collectProgress.total} ${collectProgress.current || ''}` : ''}</div>}
-      <CollectDiagnostics report={collectReport} apiVersion={apiVersion} />
-      <FetchDiagnostics data={fetchDiag} />
+      {collecting && <div className="notice info">식약처 게시판을 수집하는 중입니다. 빠른수집도 최근 게시물 확인을 위해 1~2페이지를 점검합니다.</div>}
 
       <section className="stat-grid desktop-only">
         <Metric title="오늘 신규" value={headerStats.today} sub="오늘 게시 기준" icon={<FileText size={19} />} />
@@ -429,36 +344,6 @@ function App() {
     </div>
   );
 }
-
-
-function CollectDiagnostics({ report, apiVersion }) {
-  return <section className="card collect-diagnostics">
-    <details open>
-      <summary>게시판별 수집 결과 / 파서 진단 {apiVersion ? `(${apiVersion})` : ''}</summary>
-      {!report?.length ? <p className="empty-text">아직 이 화면에서 수집 결과가 없습니다. 빠른수집 또는 기간수집 후 게시판별 확인/신규/중복 및 HTML 진단이 표시됩니다.</p> :
-        <div className="diagnostic-table-wrap"><table className="diagnostic-table"><thead><tr>
-          <th>구분</th><th>ID</th><th>확인</th><th>신규</th><th>중복</th><th>최신게시일</th><th>페이지최신일</th><th>FETCH</th><th>HTML</th><th>라인</th><th>전체건</th><th>ANCHOR</th><th>DATEBACK</th><th>오류상세</th>
-        </tr></thead><tbody>{report.map((r, idx) => <tr key={`${r.board_id || idx}`}>
-          <td>{r.category}</td><td>{r.board_id}</td><td>{numberFmt(r.checked)}</td><td>{numberFmt(r.inserted)}</td><td>{numberFmt(r.skipped)}</td><td>{r.latestDate || '-'}</td><td>{r.latestPageDate || '-'}</td><td>{r.fetchMethod || '-'}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker || '-'}</td><td>{numberFmt(r.anchorRows)}</td><td>{numberFmt(r.datebackRows)}</td><td className="diag-error">{r.fetchErrorDetail || r.error || ''}</td>
-        </tr>)}</tbody></table></div>}
-    </details>
-  </section>;
-}
-
-
-function FetchDiagnostics({ data }) {
-  if (!data) return null;
-  return <section className="card fetch-diagnostics">
-    <h3>식약처 연결진단 결과</h3>
-    <p className="diag-sub">{data.category}({data.board_id}) / {data.url} / timeout {numberFmt(data.timeoutMs)}ms</p>
-    <div className="diagnostic-table-wrap"><table className="diagnostic-table"><thead><tr>
-      <th>방식</th><th>결과</th><th>소요ms</th><th>HTML</th><th>라인</th><th>전체건</th><th>오류상세</th>
-    </tr></thead><tbody>{data.results?.map((r) => <tr key={r.method}>
-      <td>{r.method}</td><td>{r.ok ? '성공' : '실패'}</td><td>{numberFmt(r.elapsedMs)}</td><td>{numberFmt(r.htmlLength)}</td><td>{numberFmt(r.lineCount)}</td><td>{r.totalMarker ? 'Y' : 'N'}</td><td className="diag-error">{r.error || ''}</td>
-    </tr>)}</tbody></table></div>
-  </section>;
-}
-
 
 function Metric({ title, value, sub, icon }) {
   return <div className="metric card"><div className="metric-icon">{icon}</div><div><p>{title}</p><strong>{numberFmt(value)}건</strong><span>{sub}</span></div></div>;

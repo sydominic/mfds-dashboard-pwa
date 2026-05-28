@@ -7,6 +7,7 @@ set "API_PORT=8892"
 set "CLIENT_PORT=5292"
 set "API_HEALTH=http://127.0.0.1:%API_PORT%/api/health"
 set "CLIENT_URL=http://127.0.0.1:%CLIENT_PORT%"
+set "EXPECTED_API_VERSION=v20-collect-range-diagnostics"
 set "RUN_LOG=run_local.log"
 set "SERVER_LOG=server.log"
 set "CLIENT_LOG=client.log"
@@ -93,7 +94,7 @@ call :wait_url "%API_HEALTH%" "API server" "%SERVER_LOG%"
 if errorlevel 1 exit /b 1
 
 call :log "[7.5/9] Verify API version"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$r=Invoke-RestMethod -Uri '%API_HEALTH%' -TimeoutSec 5; if ($r.apiVersion -ne 'v17-port-cleanup-fix') { Write-Output ('ERROR: expected v17-port-cleanup-fix but got ' + $r.apiVersion); exit 1 } else { Write-Output ('API version OK: ' + $r.apiVersion); exit 0 }" >> "%RUN_LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$r=Invoke-RestMethod -Uri '%API_HEALTH%' -TimeoutSec 5; if ($r.apiVersion -ne '%EXPECTED_API_VERSION%') { Write-Output ('ERROR: expected %EXPECTED_API_VERSION% but got ' + $r.apiVersion); exit 1 } else { Write-Output ('API version OK: ' + $r.apiVersion); exit 0 }" >> "%RUN_LOG%" 2>&1
 if errorlevel 1 (
   call :log "ERROR: API version mismatch. Old server may still be running. See run_local.log."
   exit /b 1
