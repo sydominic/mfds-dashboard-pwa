@@ -39,6 +39,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 LOCAL_DB_PATH = DATA_DIR / "mfds_monitor_local.db"
 TODAY = date.today()
+APP_VERSION = "v11-deploy-check-dateback"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MFDSDashboard/ExternalDB",
@@ -1005,14 +1006,26 @@ def collect_mfds_to_db(start_date, end_date, collect_mode="period"):
 
 def render_collect_report():
     report = st.session_state.get("last_collect_report", [])
-    if not report:
-        return
 
-    df_report = pd.DataFrame(report)
-    if df_report.empty:
-        return
+    with st.expander(f"게시판별 수집 결과 / 파서 진단 보기 ({APP_VERSION})", expanded=False):
+        if not report:
+            st.caption("아직 이 브라우저 세션에서 수집 버튼을 실행한 결과가 없습니다. 빠른수집 또는 기간수집을 실행하면 게시판별 진단표가 표시됩니다.")
+            st.markdown(
+                """
+                진단 기준:
+                - `확인` = 파서가 해당 게시판에서 읽은 게시물 수
+                - `신규` = Supabase에 새로 저장된 수
+                - `중복` = 이미 DB에 있어 제외된 수
+                - `DATEBACK` = v10/v11 등록일 기준 역방향 파서 결과
+                """
+            )
+            return
 
-    with st.expander("게시판별 수집 결과 / 파서 진단 보기", expanded=False):
+        df_report = pd.DataFrame(report)
+        if df_report.empty:
+            st.caption("수집 결과가 비어 있습니다.")
+            return
+
         st.dataframe(
             df_report,
             hide_index=True,
@@ -1034,6 +1047,7 @@ def render_collect_report():
                 "오류": st.column_config.TextColumn("오류", width="large"),
             },
         )
+
 
 
 def auto_collect_once_per_day(start_date, end_date):
@@ -1699,6 +1713,13 @@ def main():
     st.set_page_config(page_title="MFDS Regulatory Dashboard", layout="wide")
     page_css()
 
+    # 배포 후 브라우저 세션에 남은 이전 버전 status_message/수집결과가
+    # 새 버전 확인을 방해하지 않도록 앱 버전이 바뀌면 상태를 초기화한다.
+    if st.session_state.get("__app_version") != APP_VERSION:
+        st.session_state["__app_version"] = APP_VERSION
+        st.session_state.pop("status_message", None)
+        st.session_state.pop("last_collect_report", None)
+
     for k in ["main_page", "category_page"]:
         if k not in st.session_state:
             st.session_state[k] = 1
@@ -1791,7 +1812,7 @@ def main():
             apply_current_query()
             with st.spinner(f"{input_collect_start} ~ {input_collect_end} 기간의 최신 게시물을 빠른수집 중입니다. 각 게시판 첫 페이지만 확인합니다."):
                 m_ins, m_skip, m_total = collect_mfds_to_db(input_collect_start, input_collect_end, collect_mode="fast")
-            st.session_state["status_message"] = f"빠른수집 완료: 신규 {m_ins}건, 중복 제외 {m_skip}건, 확인 {m_total}건. 아래 게시판별 결과를 확인하세요."
+            st.session_state["status_message"] = f"{APP_VERSION} 빠른수집 완료: 신규 {m_ins}건, 중복 제외 {m_skip}건, 확인 {m_total}건. 아래 게시판별 진단표를 확인하세요."
             st.cache_data.clear()
             st.rerun()
 
@@ -1799,7 +1820,7 @@ def main():
             apply_current_query()
             with st.spinner(f"{input_collect_start} ~ {input_collect_end} 기간 전체를 수집 중입니다. 여러 페이지를 확인하므로 시간이 걸릴 수 있습니다."):
                 m_ins, m_skip, m_total = collect_mfds_to_db(input_collect_start, input_collect_end, collect_mode="period")
-            st.session_state["status_message"] = f"기간수집 완료: 신규 {m_ins}건, 중복 제외 {m_skip}건, 확인 {m_total}건. 아래 게시판별 결과를 확인하세요."
+            st.session_state["status_message"] = f"{APP_VERSION} 기간수집 완료: 신규 {m_ins}건, 중복 제외 {m_skip}건, 확인 {m_total}건. 아래 게시판별 진단표를 확인하세요."
             st.cache_data.clear()
             st.rerun()
 
